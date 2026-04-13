@@ -317,6 +317,14 @@ impl Worker for CodexWorker {
         Ok(())
     }
 
+    async fn take_stdout(&self, worker_id: &str) -> Result<Option<tokio::process::ChildStdout>> {
+        let mut procs = self.processes.lock().await;
+        let wp = procs
+            .get_mut(worker_id)
+            .ok_or_else(|| anyhow!("worker '{}' not found", worker_id))?;
+        Ok(wp.child.stdout.take())
+    }
+
     fn worker_type(&self) -> &str {
         "codex"
     }

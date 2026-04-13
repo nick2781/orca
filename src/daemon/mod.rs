@@ -1,3 +1,4 @@
+pub mod executor;
 pub mod scheduler;
 pub mod server;
 pub mod state;
@@ -10,6 +11,7 @@ use serde_json::{json, Value};
 use tracing::info;
 
 use crate::config::Config;
+use crate::daemon::executor::TaskExecutor;
 use crate::daemon::scheduler::Scheduler;
 use crate::daemon::server::{IpcServer, RpcHandler};
 use crate::daemon::state::StateStore;
@@ -18,6 +20,7 @@ use crate::protocol::{
     RpcError, RpcRequest, RpcResponse, ESCALATION_NOT_FOUND, INTERNAL_ERROR, INVALID_PARAMS,
     INVALID_STATE_TRANSITION, METHOD_NOT_FOUND, TASK_NOT_FOUND,
 };
+use crate::terminal;
 use crate::types::{Plan, Task, TaskState};
 use crate::worker::codex::CodexWorker;
 use crate::worker::Worker;
@@ -135,6 +138,9 @@ impl Daemon {
     ///
     /// Writes a PID file on startup and cleans it up (along with the socket)
     /// on shutdown or when a SIGINT/SIGTERM signal is received.
+    ///
+    /// Also spawns a background task executor that polls the scheduler for
+    /// assignable tasks and dispatches them to worker processes.
     pub async fn run(self) -> Result<()> {
         let orca_dir = self.project_dir.join(".orca");
         let socket_path = self.config.socket_path(&self.project_dir);
@@ -171,8 +177,28 @@ impl Daemon {
         info!("starting orca daemon at {}", socket_path.display());
         let server = IpcServer::bind(&socket_path, handler)?;
 
+        // Create and spawn the task executor.
+        let terminal_impl = terminal::create_terminal(&self.config.terminal.provider);
+        let executor = TaskExecutor::new(
+            Arc::clone(&self.state),
+            Arc::clone(&self.scheduler),
+            Arc::clone(&self.worker),
+            Arc::clone(&self.isolation),
+            Arc::from(terminal_impl),
+            self.config.clone(),
+            self.project_dir.clone(),
+        );
+
+        let executor_handle = tokio::spawn(async move {
+            executor.run().await;
+        });
+
         tokio::select! {
             result = server.run() => result,
+            _ = executor_handle => {
+                info!("executor loop exited unexpectedly");
+                Ok(())
+            }
             _ = tokio::signal::ctrl_c() => {
                 info!("received shutdown signal");
                 Ok(())

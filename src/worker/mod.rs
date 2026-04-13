@@ -26,6 +26,10 @@ pub trait Worker: Send + Sync {
     /// Clean up a worker process, killing it if still running.
     async fn cleanup(&self, worker_id: &str) -> Result<()>;
 
+    /// Take stdout from the child process for reading output.
+    /// Returns None if stdout was already taken or the worker doesn't exist.
+    async fn take_stdout(&self, worker_id: &str) -> Result<Option<tokio::process::ChildStdout>>;
+
     /// Return the type identifier for this worker implementation.
     fn worker_type(&self) -> &str;
 }
