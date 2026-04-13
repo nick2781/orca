@@ -2,6 +2,8 @@
 
 **Status: Draft**
 
+English | [中文](design.zh-CN.md)
+
 ## Changelog
 
 | Date | Change |
