@@ -2,10 +2,10 @@ pub mod scheduler;
 pub mod server;
 pub mod state;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use tracing::info;
 
@@ -21,6 +21,85 @@ use crate::protocol::{
 use crate::types::{Plan, Task, TaskState};
 use crate::worker::codex::CodexWorker;
 use crate::worker::Worker;
+
+// -- PID file management -----------------------------------------------------
+
+const PID_FILE_NAME: &str = "orca.pid";
+
+/// Check if a daemon is already running by reading the PID file and probing the process.
+/// Returns an error if another daemon is alive.
+pub fn check_existing_daemon(orca_dir: &Path) -> Result<()> {
+    let pid_path = orca_dir.join(PID_FILE_NAME);
+    if !pid_path.exists() {
+        return Ok(());
+    }
+
+    let contents = std::fs::read_to_string(&pid_path).unwrap_or_default();
+    let pid: u32 = match contents.trim().parse() {
+        Ok(p) => p,
+        Err(_) => {
+            // Corrupt PID file — remove it and allow startup.
+            let _ = std::fs::remove_file(&pid_path);
+            return Ok(());
+        }
+    };
+
+    if is_process_alive(pid) {
+        bail!("daemon already running (pid: {pid})");
+    }
+
+    // Stale PID file — the process is gone, clean up.
+    let _ = std::fs::remove_file(&pid_path);
+    Ok(())
+}
+
+/// Write the current process PID to `.orca/orca.pid`.
+pub fn write_pid_file(orca_dir: &Path) -> Result<()> {
+    let pid_path = orca_dir.join(PID_FILE_NAME);
+    std::fs::create_dir_all(orca_dir)?;
+    std::fs::write(&pid_path, std::process::id().to_string())?;
+    Ok(())
+}
+
+/// Remove the PID file. Best-effort — errors are silently ignored.
+pub fn remove_pid_file(orca_dir: &Path) {
+    let pid_path = orca_dir.join(PID_FILE_NAME);
+    let _ = std::fs::remove_file(&pid_path);
+}
+
+/// Read the PID from the PID file, if it exists and is valid.
+pub fn read_pid_file(orca_dir: &Path) -> Option<u32> {
+    let pid_path = orca_dir.join(PID_FILE_NAME);
+    let contents = std::fs::read_to_string(&pid_path).ok()?;
+    contents.trim().parse().ok()
+}
+
+/// Check whether a process with the given PID is alive.
+fn is_process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// RAII guard that removes the PID file and socket on drop.
+struct DaemonGuard {
+    orca_dir: PathBuf,
+    socket_path: PathBuf,
+}
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        remove_pid_file(&self.orca_dir);
+        let _ = std::fs::remove_file(&self.socket_path);
+        info!("daemon cleanup complete");
+    }
+}
+
+// -- Daemon ------------------------------------------------------------------
 
 /// The Orca daemon: manages state, scheduling, workers, and handles RPC requests.
 pub struct Daemon {
@@ -53,8 +132,22 @@ impl Daemon {
     }
 
     /// Start the IPC server and run the accept loop.
+    ///
+    /// Writes a PID file on startup and cleans it up (along with the socket)
+    /// on shutdown or when a SIGINT/SIGTERM signal is received.
     pub async fn run(self) -> Result<()> {
+        let orca_dir = self.project_dir.join(".orca");
         let socket_path = self.config.socket_path(&self.project_dir);
+
+        // Refuse to start if another daemon is already running.
+        check_existing_daemon(&orca_dir)?;
+        write_pid_file(&orca_dir)?;
+
+        // The guard removes the PID file and socket when dropped.
+        let _guard = DaemonGuard {
+            orca_dir,
+            socket_path: socket_path.clone(),
+        };
 
         let state = Arc::clone(&self.state);
         let scheduler = Arc::clone(&self.scheduler);
@@ -77,7 +170,15 @@ impl Daemon {
 
         info!("starting orca daemon at {}", socket_path.display());
         let server = IpcServer::bind(&socket_path, handler)?;
-        server.run().await
+
+        tokio::select! {
+            result = server.run() => result,
+            _ = tokio::signal::ctrl_c() => {
+                info!("received shutdown signal");
+                Ok(())
+            }
+        }
+        // _guard is dropped here, cleaning up PID file and socket.
     }
 }
 

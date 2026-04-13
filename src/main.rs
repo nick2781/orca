@@ -88,25 +88,75 @@ async fn handle_daemon(action: DaemonAction, config: Config, project_dir: &Path)
             daemon.run().await
         }
         DaemonAction::Stop => {
-            let socket_path = config.socket_path(project_dir);
-            if socket_path.exists() {
-                std::fs::remove_file(&socket_path).with_context(|| {
-                    format!("failed to remove socket {}", socket_path.display())
-                })?;
-                println!("Daemon stopped (socket removed: {})", socket_path.display());
-            } else {
-                println!("No daemon socket found at {}", socket_path.display());
+            let orca_dir = project_dir.join(".orca");
+            match orca::daemon::read_pid_file(&orca_dir) {
+                Some(pid) => {
+                    println!("Sending SIGTERM to daemon (pid: {pid})...");
+                    // Send SIGTERM for graceful shutdown.
+                    let _ = std::process::Command::new("kill")
+                        .args([&pid.to_string()])
+                        .status();
+
+                    // Wait briefly for the process to exit.
+                    for _ in 0..20 {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        let alive = std::process::Command::new("kill")
+                            .args(["-0", &pid.to_string()])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                            .map(|s| s.success())
+                            .unwrap_or(false);
+                        if !alive {
+                            println!("Daemon stopped.");
+                            return Ok(());
+                        }
+                    }
+
+                    // Still alive after 2s — force kill.
+                    println!("Daemon did not exit, sending SIGKILL...");
+                    let _ = std::process::Command::new("kill")
+                        .args(["-9", &pid.to_string()])
+                        .status();
+
+                    // Clean up files the guard could not remove.
+                    orca::daemon::remove_pid_file(&orca_dir);
+                    let socket_path = config.socket_path(project_dir);
+                    let _ = std::fs::remove_file(&socket_path);
+                    println!("Daemon killed.");
+                }
+                None => {
+                    // No PID file — fall back to socket removal.
+                    let socket_path = config.socket_path(project_dir);
+                    if socket_path.exists() {
+                        std::fs::remove_file(&socket_path).with_context(|| {
+                            format!("failed to remove socket {}", socket_path.display())
+                        })?;
+                        println!(
+                            "No PID file found. Removed stale socket: {}",
+                            socket_path.display()
+                        );
+                    } else {
+                        println!("No daemon running (no PID file or socket found).");
+                    }
+                }
             }
             Ok(())
         }
         DaemonAction::Status => {
+            let orca_dir = project_dir.join(".orca");
+            let pid_info = orca::daemon::read_pid_file(&orca_dir);
             let socket_path = config.socket_path(project_dir);
             match IpcClient::connect(&socket_path).await {
                 Ok(mut client) => {
                     let req = RpcRequest::new("ping", json!({}));
                     match client.call(&req).await {
                         Ok(resp) if resp.error.is_none() => {
-                            println!("Daemon is running (socket: {})", socket_path.display());
+                            if let Some(pid) = pid_info {
+                                println!("Daemon is running (pid: {pid}, socket: {})", socket_path.display());
+                            } else {
+                                println!("Daemon is running (socket: {})", socket_path.display());
+                            }
                         }
                         Ok(resp) => {
                             println!("Daemon responded with error: {:?}", resp.error);
