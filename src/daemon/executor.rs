@@ -273,10 +273,16 @@ impl TaskExecutor {
         );
         // Escape single quotes for shell safety.
         let escaped_prompt = short_prompt.replace('\'', "'\\''");
-        let worker_cmd = self.worker.worker_type();
+        // Build shell command from config: codex [args...] '<prompt>'
+        let worker_config = self.config.codex_worker_config();
+        let args_str = if worker_config.args.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", worker_config.args.join(" "))
+        };
         let cmd = format!(
-            "cd '{}' && {} --full-auto '{}'",
-            work_dir_str, worker_cmd, escaped_prompt
+            "cd '{}' && {}{} '{}'",
+            work_dir_str, worker_config.command, args_str, escaped_prompt
         );
 
         // Launch Codex in a user-visible terminal pane.

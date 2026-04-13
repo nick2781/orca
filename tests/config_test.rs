@@ -152,7 +152,10 @@ fn test_codex_worker_config_defaults() {
     let codex = config.codex_worker_config();
 
     assert_eq!(codex.command, "codex");
-    assert_eq!(codex.args, vec!["--full-auto"]);
+    assert!(
+        codex.args.is_empty(),
+        "default args should be empty (interactive mode)"
+    );
     assert_eq!(codex.timeout_secs, 300);
     assert_eq!(codex.max_retries, 2);
 }
