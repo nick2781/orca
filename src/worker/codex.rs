@@ -43,11 +43,10 @@ pub fn generate_agents_md(task: &TaskSpec) -> String {
     }
 
     if !task.context.constraints.is_empty() {
-        content.push_str("**Constraints:**\n");
-        for constraint in &task.context.constraints {
-            content.push_str(&format!("- {}\n", constraint));
-        }
-        content.push('\n');
+        content.push_str(&format!(
+            "**Constraints:** {}\n\n",
+            task.context.constraints
+        ));
     }
 
     content
@@ -144,11 +143,7 @@ pub fn generate_prompt(task: &TaskSpec, work_dir: &str) -> String {
     }
 
     if !task.context.constraints.is_empty() {
-        prompt.push_str("## Constraints\n");
-        for constraint in &task.context.constraints {
-            prompt.push_str(&format!("- {}\n", constraint));
-        }
-        prompt.push('\n');
+        prompt.push_str(&format!("## Constraints\n{}\n\n", task.context.constraints));
     }
 
     if !task.context.references.is_empty() {

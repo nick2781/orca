@@ -11,7 +11,7 @@ fn make_task(id: &str, files: Vec<&str>, mode: IsolationMode) -> TaskSpec {
         context: TaskContext {
             files: files.into_iter().map(String::from).collect(),
             references: Vec::new(),
-            constraints: Vec::new(),
+            constraints: String::new(),
         },
         isolation: mode,
         depends_on: Vec::new(),

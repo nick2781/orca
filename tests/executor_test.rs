@@ -96,7 +96,7 @@ fn make_spec(id: &str) -> TaskSpec {
         context: TaskContext {
             files: vec!["src/main.rs".to_string()],
             references: vec![],
-            constraints: vec![],
+            constraints: String::new(),
         },
         isolation: IsolationMode::Serial,
         depends_on: vec![],

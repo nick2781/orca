@@ -78,7 +78,7 @@ async fn test_daemon_plan_lifecycle() {
                 "id": "t1",
                 "title": "Task 1",
                 "description": "First independent task",
-                "context": {"files": ["a.rs"], "references": [], "constraints": []},
+                "context": {"files": ["a.rs"], "references": [], "constraints": ""},
                 "isolation": "auto",
                 "depends_on": [],
                 "priority": 0
@@ -87,7 +87,7 @@ async fn test_daemon_plan_lifecycle() {
                 "id": "t2",
                 "title": "Task 2",
                 "description": "Second independent task",
-                "context": {"files": ["b.rs"], "references": [], "constraints": []},
+                "context": {"files": ["b.rs"], "references": [], "constraints": ""},
                 "isolation": "auto",
                 "depends_on": [],
                 "priority": 0

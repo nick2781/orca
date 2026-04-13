@@ -23,7 +23,7 @@ fn make_spec_with_files(id: &str, files: Vec<&str>) -> TaskSpec {
         context: TaskContext {
             files: files.into_iter().map(String::from).collect(),
             references: Vec::new(),
-            constraints: Vec::new(),
+            constraints: String::new(),
         },
         isolation: IsolationMode::Auto,
         depends_on: Vec::new(),

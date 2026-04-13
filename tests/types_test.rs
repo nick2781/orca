@@ -102,7 +102,7 @@ fn test_taskspec_json_roundtrip() {
         context: TaskContext {
             files: vec!["src/main.rs".to_string()],
             references: vec!["docs/spec.md".to_string()],
-            constraints: vec!["no unsafe".to_string()],
+            constraints: "no unsafe".to_string(),
         },
         isolation: IsolationMode::Worktree,
         depends_on: vec!["task-000".to_string()],
@@ -120,5 +120,5 @@ fn test_taskspec_json_roundtrip() {
     assert_eq!(deserialized.priority, 5);
     assert_eq!(deserialized.context.files, vec!["src/main.rs"]);
     assert_eq!(deserialized.context.references, vec!["docs/spec.md"]);
-    assert_eq!(deserialized.context.constraints, vec!["no unsafe"]);
+    assert_eq!(deserialized.context.constraints, "no unsafe");
 }

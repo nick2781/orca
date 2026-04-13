@@ -1,6 +1,6 @@
 # Orca
 
-> **WARNING: This is an experimental project under active development. NOT ready for production use.** Core features like the task execution loop and worker output monitoring are not yet implemented. Use at your own risk.
+> **WARNING: This is an experimental project under active development. NOT ready for production use.** Core architecture is implemented but not yet battle-tested. Use at your own risk.
 
 Multi-agent orchestrator: Claude Code brain + Codex workers.
 

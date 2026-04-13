@@ -19,7 +19,8 @@ pub struct TaskSpec {
 pub struct TaskContext {
     pub files: Vec<String>,
     pub references: Vec<String>,
-    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub constraints: String,
 }
 
 /// How a task should be isolated during execution.

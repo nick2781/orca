@@ -97,7 +97,7 @@ fn test_generate_prompt() {
         context: TaskContext {
             files: vec!["src/auth.rs".to_string(), "src/handler.rs".to_string()],
             references: vec!["docs/auth-spec.md".to_string()],
-            constraints: vec!["no unsafe code".to_string()],
+            constraints: "no unsafe code".to_string(),
         },
         isolation: orca::types::IsolationMode::Auto,
         depends_on: vec![],
@@ -221,7 +221,7 @@ fn test_generate_agents_md() {
         context: TaskContext {
             files: vec!["src/auth.rs".to_string(), "src/jwt.rs".to_string()],
             references: vec![],
-            constraints: vec!["no breaking changes".to_string()],
+            constraints: "no breaking changes".to_string(),
         },
         isolation: orca::types::IsolationMode::Auto,
         depends_on: vec![],

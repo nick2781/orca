@@ -799,7 +799,7 @@ mod tests {
                     "id": "t1",
                     "title": "Task 1",
                     "description": "First task",
-                    "context": {"files": [], "references": [], "constraints": []},
+                    "context": {"files": [], "references": [], "constraints": ""},
                     "isolation": "auto",
                     "depends_on": [],
                     "priority": 0
@@ -808,7 +808,7 @@ mod tests {
                     "id": "t2",
                     "title": "Task 2",
                     "description": "Second task",
-                    "context": {"files": [], "references": [], "constraints": []},
+                    "context": {"files": [], "references": [], "constraints": ""},
                     "isolation": "auto",
                     "depends_on": ["t1"],
                     "priority": 0
@@ -849,7 +849,7 @@ mod tests {
                     "id": "a",
                     "title": "A",
                     "description": "",
-                    "context": {"files": [], "references": [], "constraints": []},
+                    "context": {"files": [], "references": [], "constraints": ""},
                     "isolation": "auto",
                     "depends_on": [],
                     "priority": 0
@@ -858,7 +858,7 @@ mod tests {
                     "id": "b",
                     "title": "B",
                     "description": "",
-                    "context": {"files": [], "references": [], "constraints": []},
+                    "context": {"files": [], "references": [], "constraints": ""},
                     "isolation": "auto",
                     "depends_on": [],
                     "priority": 0
@@ -907,7 +907,7 @@ mod tests {
                     "id": "t1",
                     "title": "T1",
                     "description": "",
-                    "context": {"files": [], "references": [], "constraints": []},
+                    "context": {"files": [], "references": [], "constraints": ""},
                     "isolation": "auto",
                     "depends_on": [],
                     "priority": 0
@@ -950,7 +950,7 @@ mod tests {
                 "id": "t1",
                 "title": "Test Task",
                 "description": "A test",
-                "context": {"files": ["src/main.rs"], "references": [], "constraints": []},
+                "context": {"files": ["src/main.rs"], "references": [], "constraints": ""},
                 "isolation": "auto",
                 "depends_on": [],
                 "priority": 5
@@ -996,7 +996,7 @@ mod tests {
             "id": "p1",
             "tasks": [{
                 "id": "t1", "title": "T1", "description": "",
-                "context": {"files": [], "references": [], "constraints": []},
+                "context": {"files": [], "references": [], "constraints": ""},
                 "isolation": "auto", "depends_on": [], "priority": 0
             }],
             "dependencies": [],
@@ -1040,7 +1040,7 @@ mod tests {
             "id": "p1",
             "tasks": [{
                 "id": "t1", "title": "T1", "description": "",
-                "context": {"files": [], "references": [], "constraints": []},
+                "context": {"files": [], "references": [], "constraints": ""},
                 "isolation": "auto", "depends_on": [], "priority": 0
             }],
             "dependencies": [],
@@ -1078,7 +1078,7 @@ mod tests {
             "id": "p1",
             "tasks": [{
                 "id": "t1", "title": "T1", "description": "",
-                "context": {"files": [], "references": [], "constraints": []},
+                "context": {"files": [], "references": [], "constraints": ""},
                 "isolation": "auto", "depends_on": [], "priority": 0
             }],
             "dependencies": [],
@@ -1113,7 +1113,7 @@ mod tests {
             "id": "p1",
             "tasks": [{
                 "id": "t1", "title": "T1", "description": "",
-                "context": {"files": [], "references": [], "constraints": []},
+                "context": {"files": [], "references": [], "constraints": ""},
                 "isolation": "auto", "depends_on": [], "priority": 0
             }],
             "dependencies": [],
@@ -1137,7 +1137,7 @@ mod tests {
             "id": "p1",
             "tasks": [{
                 "id": "t1", "title": "T1", "description": "",
-                "context": {"files": [], "references": [], "constraints": []},
+                "context": {"files": [], "references": [], "constraints": ""},
                 "isolation": "auto", "depends_on": [], "priority": 0
             }],
             "dependencies": [],
@@ -1175,7 +1175,7 @@ mod tests {
             "id": "p1",
             "tasks": [{
                 "id": "t1", "title": "T1", "description": "",
-                "context": {"files": [], "references": [], "constraints": []},
+                "context": {"files": [], "references": [], "constraints": ""},
                 "isolation": "auto", "depends_on": [], "priority": 0
             }],
             "dependencies": [],
@@ -1249,7 +1249,7 @@ mod tests {
             "id": "p1",
             "tasks": [{
                 "id": "t1", "title": "T1", "description": "",
-                "context": {"files": [], "references": [], "constraints": []},
+                "context": {"files": [], "references": [], "constraints": ""},
                 "isolation": "worktree", "depends_on": [], "priority": 0
             }],
             "dependencies": [],

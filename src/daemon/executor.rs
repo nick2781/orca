@@ -542,7 +542,7 @@ mod tests {
             context: TaskContext {
                 files: vec!["src/main.rs".to_string()],
                 references: vec![],
-                constraints: vec![],
+                constraints: String::new(),
             },
             isolation: IsolationMode::Worktree,
             depends_on: vec![],
