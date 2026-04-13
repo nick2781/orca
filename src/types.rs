@@ -62,7 +62,7 @@ pub struct Task {
 }
 
 /// Output produced by a completed task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskOutput {
     pub files_changed: Vec<String>,
     pub tests_passed: bool,
