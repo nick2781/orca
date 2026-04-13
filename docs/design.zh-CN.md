@@ -318,67 +318,69 @@ trait Worker: Send + Sync {
 
 ### 6.2 Codex 适配器
 
-Codex CLI 通过 stdin/stdout 交互：
+Codex 在**用户可见的终端 pane 中**运行 — 用户实时看到完整的交互输出。
+daemon 不捕获 stdout，而是：
 
 ```
 orcad
   │
-  │ spawn: codex --full-auto -q
-  │         在 worktree 目录或项目目录中
+  │ 1. 写 AGENTS.md 到 worktree（输出协议 + 任务上下文）
+  │ 2. 构建命令：codex --full-auto "<prompt>"
+  │ 3. Terminal.create_pane(command) → Ghostty 分屏 / iTerm2 分屏
+  │
   ▼
 ┌──────────────────────────────────┐
-│ Codex 进程                        │
+│ 终端 Pane（用户可见）              │
 │                                  │
-│  stdin  ◄── 任务 prompt（从       │
-│              TaskSpec 生成自然     │
-│              语言 prompt）        │
+│  codex --full-auto "<prompt>"    │
+│  ┌────────────────────────────┐  │
+│  │ Codex 交互 UI              │  │
+│  │（用户实时观察）              │  │
+│  └────────────────────────────┘  │
 │                                  │
-│  stdout ──► 输出解析：            │
-│              - 进度信号            │
-│              - 提权请求（约定格式） │
-│              - 完成信号            │
-│  stderr ──► 错误捕获              │
+│  读取 AGENTS.md 获取任务上下文    │
+│  写代码、跑测试等                 │
 └──────────────────────────────────┘
+  │
+  │ 退出后：daemon 检查 worktree git diff
+  │        → 有变更？ → 任务完成 → CC review
+  │        → 无变更？ → 任务阻塞
+  ▼
+orcad 检测完成状态
 ```
 
-### 6.3 Prompt 生成
+**核心原则：** Worker 输出是给**用户看的**，不是给 daemon 解析的。
+任务完成通过检查 Codex 退出后的 **git 状态** 判断，而不是解析 stdout 标记。
 
-daemon 将 TaskSpec 转化为 Codex 能理解的 prompt：
+### 6.3 通过 AGENTS.md 传递任务上下文
 
-```
-You are working on task: {title}
+daemon 在启动 Codex 前将 `AGENTS.md` 写入 worktree，包含任务描述、文件范围、约束等。
+Codex 会自动读取该文件获取上下文。
 
-## Description
-{description}
+### 6.4 Prompt 生成
 
-## Files to modify
-{context.files}
+Prompt 作为 CLI 位置参数传递：
 
-## Constraints
-{context.constraints}
-
-## References
-{context.references}
-
-## Working directory
-{worktree_path}
-
-## Rules
-- When you need a decision, output: [ORCA:ESCALATE] {json}
-- When done, output: [ORCA:DONE] {json summary}
-- When you hit a blocker, output: [ORCA:BLOCKED] {json reason}
-- Do not modify files outside the specified scope
+```bash
+codex --full-auto "Implement task: <title>. <description>. See AGENTS.md for details."
 ```
 
-### 6.4 输出标记
+完整的任务上下文在 AGENTS.md 中，prompt 只是一个简洁的触发器。
 
-| 标记 | 含义 | daemon 行为 |
-|------|------|------------|
-| `[ORCA:DONE]` | 任务完成 | 状态 → review，通知 CC |
-| `[ORCA:ESCALATE]` | 需要决策 | 状态 → blocked，路由提权 |
-| `[ORCA:BLOCKED]` | 卡住了 | 状态 → blocked，分析原因 |
-| `[ORCA:PROGRESS]` | 进度更新 | 更新状态，展示到终端 |
-| 无标记输出 | 正常工作输出 | 透传到 terminal pane |
+### 6.5 任务完成检测
+
+由于 Codex 在用户可见的终端 pane 中运行（不是 piped 子进程），
+daemon 通过监控**进程退出 + git 状态**检测任务完成：
+
+| 信号 | 检测方式 | daemon 行为 |
+|------|---------|------------|
+| Codex 进程退出 | 轮询进程/pane 存活状态 | 检查 worktree |
+| git diff 非空 | worktree 中 `git diff --stat` | 状态 → review，CC 审查 |
+| git diff 为空 | 无变更 | 状态 → blocked，提权 |
+| 进程崩溃 | 非零退出码 + 无变更 | 状态 → blocked，超时提权 |
+
+AGENTS.md 中的输出标记（`[ORCA:DONE]` 等）是**可选提示** ——
+Codex 可能输出也可能不输出。主要完成信号是进程退出 + git diff。
 
 ### 6.5 可扩展性
 
@@ -464,7 +466,7 @@ trait Terminal: Send + Sync {
 
 | 提供者 | 方式 | 自动分屏 |
 |--------|------|---------|
-| `GhosttyTerminal` | CLI `ghostty -e` | 新 tab（暂无 split API）|
+| `GhosttyTerminal` | `ghostty +action new_split_right` | 分屏 pane（IPC）|
 | `ItermTerminal` | Python/AppleScript API | 分屏 pane |
 | `ManualTerminal` | 用户运行 `orca worker connect` | 不适用 |
 

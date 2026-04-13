@@ -15,7 +15,8 @@ src/daemon/server.rs → Unix socket IPC
 src/daemon/state.rs  → State persistence (state.json + ledger.jsonl)
 src/daemon/scheduler.rs → DAG dependency graph
 src/worker/mod.rs   → Worker trait
-src/worker/codex.rs → Codex CLI adapter
+src/worker/codex.rs → Codex CLI adapter (runs in terminal pane, NOT as piped subprocess)
+src/daemon/executor.rs → Task execution engine (scheduling loop + completion detection)
 src/isolation.rs    → Git worktree management
 src/terminal/       → Terminal pane management (ghostty/iterm2/manual)
 src/mcp.rs          → MCP server (rmcp)
@@ -77,6 +78,10 @@ Worker (Codex × N) — Execution layer
 ```
 
 Three layers: CC does plan/review/decisions. Daemon does scheduling/state/routing. Workers do coding/testing/git.
+
+**Worker execution model:** Workers run in user-visible terminal split panes (Ghostty/iTerm2).
+Daemon does NOT pipe stdout — user watches Codex work in real time.
+Task completion detected via git diff in worktree after process exits.
 
 ## Common Operations
 

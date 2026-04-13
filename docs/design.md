@@ -319,67 +319,72 @@ trait Worker: Send + Sync {
 
 ### 6.2 Codex Adapter
 
-Codex CLI interaction via stdin/stdout:
+Codex runs **inside a terminal pane** — the user sees its full interactive output in real time.
+Daemon does NOT capture stdout. Instead:
 
 ```
 orcad
   │
-  │ spawn: codex --full-auto --quiet
-  │         in worktree dir or project dir
+  │ 1. Write AGENTS.md to worktree (output protocol + task context)
+  │ 2. Build command: codex --full-auto "<prompt>"
+  │ 3. Terminal.create_pane(command) → Ghostty split / iTerm2 split
+  │
   ▼
 ┌──────────────────────────────────┐
-│ Codex process                    │
+│ Terminal Pane (user-visible)      │
 │                                  │
-│  stdin  ◄── task prompt (从      │
-│              TaskSpec 生成自然    │
-│              语言 prompt)        │
+│  codex --full-auto "<prompt>"    │
+│  ┌────────────────────────────┐  │
+│  │ Codex interactive UI       │  │
+│  │ (user watches in real time)│  │
+│  └────────────────────────────┘  │
 │                                  │
-│  stdout ──► 输出解析:            │
-│              - 进度信号           │
-│              - 提权请求（约定格式）│
-│              - 完成信号           │
-│  stderr ──► 错误捕获             │
+│  Reads AGENTS.md for task context│
+│  Writes code, runs tests, etc.  │
 └──────────────────────────────────┘
+  │
+  │ On exit: daemon checks worktree git diff
+  │          → files changed? → task done → CC review
+  │          → no changes? → task blocked
+  ▼
+orcad detects completion
 ```
 
-### 6.3 Prompt Generation
+**Key principle:** Worker output is for the **user to watch**, not for the daemon to parse.
+Task completion is detected by inspecting **git state** after Codex exits, not by parsing stdout markers.
 
-daemon 将 TaskSpec 转化为 Codex 能理解的 prompt：
+### 6.3 Task Context via AGENTS.md
 
+Instead of piping prompts via stdin, daemon writes an `AGENTS.md` file to the worktree
+before launching Codex. This file contains task description, scoped files, constraints,
+and output protocol markers. Codex reads it automatically.
+
+### 6.4 Prompt Generation
+
+The prompt is passed as a CLI positional argument:
+
+```bash
+codex --full-auto "Implement task: <title>. <description>. See AGENTS.md for details."
 ```
-You are working on task: {title}
 
-## Description
-{description}
-
-## Files to modify
-{context.files}
-
-## Constraints
-{context.constraints}
-
-## References
-{context.references}
-
-## Working directory
-{worktree_path}
-
-## Rules
-- When you need a decision, output: [ORCA:ESCALATE] {json}
-- When done, output: [ORCA:DONE] {json summary}
-- When you hit a blocker, output: [ORCA:BLOCKED] {json reason}
-- Do not modify files outside the specified scope
-```
+The full task context lives in AGENTS.md, the prompt is a concise trigger.
 
 ### 6.4 Output Markers
 
-| Marker | Meaning | Daemon Action |
-|--------|---------|--------------|
-| `[ORCA:DONE]` | Task completed | State → review, notify CC |
-| `[ORCA:ESCALATE]` | Needs decision | State → blocked, route escalation |
-| `[ORCA:BLOCKED]` | Stuck | State → blocked, analyze reason |
-| `[ORCA:PROGRESS]` | Progress update | Update state, display in terminal |
-| No marker | Normal output | Pass through to terminal pane |
+### 6.5 Task Completion Detection
+
+Since Codex runs in a user-visible terminal pane (not as a piped subprocess),
+daemon detects task completion by monitoring the **process exit + git state**:
+
+| Signal | Detection | Daemon Action |
+|--------|-----------|--------------|
+| Codex process exits | Poll pane/process alive status | Inspect worktree |
+| Git diff non-empty | `git diff --stat` in worktree | State → review, CC reviews |
+| Git diff empty | No changes made | State → blocked, escalate |
+| Process crashed | Non-zero exit + no changes | State → blocked, timeout escalation |
+
+AGENTS.md output markers (`[ORCA:DONE]`, `[ORCA:ESCALATE]`, etc.) are **optional hints** —
+Codex may or may not output them. The primary completion signal is process exit + git diff.
 
 ### 6.5 Extensibility
 
@@ -465,9 +470,9 @@ Implementations:
 
 | Provider | Method | Auto-split |
 |----------|--------|-----------|
-| `GhosttyTerminal` | CLI `ghostty -e` | New tab (no split API yet) |
+| `GhosttyTerminal` | `ghostty +action new_split_right` | Split pane via IPC |
 | `ItermTerminal` | Python/AppleScript API | Split pane |
-| `ManualTerminal` | User runs `orca worker connect` | N/A |
+| `ManualTerminal` | User runs command manually | N/A |
 
 #### Configuration
 
