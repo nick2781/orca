@@ -1,0 +1,35 @@
+# Orca configuration — project-level overrides.
+# Place as `orca.toml` in your project root.
+# Global defaults live in ~/.orca/config.toml
+
+[daemon]
+socket_path = ".orca/orca.sock"
+max_workers = 4
+log_level = "info"            # trace | debug | info | warn | error
+
+[terminal]
+provider = "manual"           # manual | tmux | kitty
+layout = "tabs"               # tabs | splits
+auto_open = true
+
+[worker.codex]
+command = "codex"
+args = ["--full-auto", "-q"]
+timeout_secs = 300
+max_retries = 2
+
+[isolation]
+worktree_dir = ".agents/worktree"
+default_strategy = "auto"     # auto | worktree | serial
+target_branch = "main"
+
+[escalation]
+auto_approve = ["implementation_choice"]
+always_user = ["architecture_change", "destructive_operation", "scope_exceeded"]
+cc_first = ["test_failure", "timeout", "conflict"]
+worker_timeout_secs = 300
+max_retries = 2
+
+[notification]
+terminal_bell = true
+system_notification = true
