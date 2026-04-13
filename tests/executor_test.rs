@@ -59,10 +59,7 @@ impl Worker for MockWorker {
         Ok(())
     }
 
-    async fn take_stdout(
-        &self,
-        _worker_id: &str,
-    ) -> Result<Option<tokio::process::ChildStdout>> {
+    async fn take_stdout(&self, _worker_id: &str) -> Result<Option<tokio::process::ChildStdout>> {
         Ok(None)
     }
 
@@ -216,7 +213,11 @@ async fn test_tick_skips_when_no_pending() {
 
     // No new workers should have been spawned.
     let spawned = mock_worker.spawned.lock().await;
-    assert_eq!(spawned.len(), 0, "should not spawn for already-running task");
+    assert_eq!(
+        spawned.len(),
+        0,
+        "should not spawn for already-running task"
+    );
 }
 
 #[tokio::test]
@@ -294,5 +295,7 @@ async fn test_ask_cc_creates_escalation() {
 
     let escalations = store.pending_escalations();
     assert_eq!(escalations.len(), 1);
-    assert!(escalations[0].summary.contains("Cannot determine isolation"));
+    assert!(escalations[0]
+        .summary
+        .contains("Cannot determine isolation"));
 }

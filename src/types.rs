@@ -157,9 +157,6 @@ impl Task {
     }
 }
 
-
-
-
 impl TaskSpec {
     /// Create a new TaskSpec with sensible defaults.
     pub fn new(title: impl Into<String>, description: impl Into<String>) -> Self {

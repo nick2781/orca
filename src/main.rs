@@ -153,7 +153,10 @@ async fn handle_daemon(action: DaemonAction, config: Config, project_dir: &Path)
                     match client.call(&req).await {
                         Ok(resp) if resp.error.is_none() => {
                             if let Some(pid) = pid_info {
-                                println!("Daemon is running (pid: {pid}, socket: {})", socket_path.display());
+                                println!(
+                                    "Daemon is running (pid: {pid}, socket: {})",
+                                    socket_path.display()
+                                );
                             } else {
                                 println!("Daemon is running (socket: {})", socket_path.display());
                             }

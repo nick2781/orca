@@ -96,10 +96,7 @@ mod tests {
     fn test_route_config_override() {
         // Move "conflict" from cc_first to auto_approve.
         let config = EscalationConfig {
-            auto_approve: vec![
-                "implementation_choice".to_string(),
-                "conflict".to_string(),
-            ],
+            auto_approve: vec!["implementation_choice".to_string(), "conflict".to_string()],
             always_user: vec![],
             cc_first: vec![],
             ..Default::default()

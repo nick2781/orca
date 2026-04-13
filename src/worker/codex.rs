@@ -213,12 +213,8 @@ impl Worker for CodexWorker {
         // before a task is dispatched.  The file is overwritten with
         // task-specific content in `dispatch`.
         let agents_path = Path::new(work_dir).join("AGENTS.md");
-        std::fs::write(&agents_path, AGENTS_MD_TEMPLATE).with_context(|| {
-            format!(
-                "failed to write AGENTS.md to '{}'",
-                agents_path.display()
-            )
-        })?;
+        std::fs::write(&agents_path, AGENTS_MD_TEMPLATE)
+            .with_context(|| format!("failed to write AGENTS.md to '{}'", agents_path.display()))?;
 
         let child = Command::new(&self.config.command)
             .args(&self.config.args)

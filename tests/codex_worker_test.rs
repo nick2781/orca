@@ -167,10 +167,7 @@ fn test_parse_codex_json_result() {
     let line = r#"{"type":"result","output":"file contents here"}"#;
     let msg = parse_worker_line(line);
 
-    assert_eq!(
-        msg,
-        WorkerMessage::Output("file contents here".to_string())
-    );
+    assert_eq!(msg, WorkerMessage::Output("file contents here".to_string()));
 }
 
 #[test]
@@ -260,14 +257,8 @@ fn test_generate_agents_md() {
         content.contains("Extract JWT validation"),
         "should contain task description"
     );
-    assert!(
-        content.contains("src/auth.rs"),
-        "should list scoped files"
-    );
-    assert!(
-        content.contains("src/jwt.rs"),
-        "should list scoped files"
-    );
+    assert!(content.contains("src/auth.rs"), "should list scoped files");
+    assert!(content.contains("src/jwt.rs"), "should list scoped files");
     assert!(
         content.contains("no breaking changes"),
         "should list constraints"

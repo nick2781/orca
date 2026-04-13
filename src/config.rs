@@ -80,8 +80,6 @@ pub struct NotificationConfig {
 
 // --- Default implementations ---
 
-
-
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -101,7 +99,6 @@ impl Default for TerminalConfig {
         }
     }
 }
-
 
 impl Default for WorkerConfig {
     fn default() -> Self {

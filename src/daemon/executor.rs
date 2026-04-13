@@ -153,7 +153,8 @@ impl TaskExecutor {
             IsolationDecision::Worktree { path, branch } => {
                 info!(
                     task_id,
-                    branch, "creating worktree for task at {}",
+                    branch,
+                    "creating worktree for task at {}",
                     path.display()
                 );
                 self.isolation.create_worktree(path, branch)?;
@@ -168,7 +169,10 @@ impl TaskExecutor {
                 return Ok(()); // Skip -- will be picked up on a future tick.
             }
             IsolationDecision::AskCc => {
-                info!(task_id, "isolation decision needs CC input, creating escalation");
+                info!(
+                    task_id,
+                    "isolation decision needs CC input, creating escalation"
+                );
                 let escalation_id = format!("esc-isolation-{task_id}");
                 let mut store = self.state.lock().unwrap();
                 store.add_escalation(EscalationRequest {
@@ -823,6 +827,8 @@ mod tests {
         // Escalation should exist.
         let escalations = store.pending_escalations();
         assert_eq!(escalations.len(), 1);
-        assert!(escalations[0].summary.contains("Cannot determine isolation"));
+        assert!(escalations[0]
+            .summary
+            .contains("Cannot determine isolation"));
     }
 }

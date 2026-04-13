@@ -145,11 +145,7 @@ impl Scheduler {
 
         ready
             .into_iter()
-            .filter(|id| {
-                tasks
-                    .get(id)
-                    .is_some_and(|t| t.state == TaskState::Pending)
-            })
+            .filter(|id| tasks.get(id).is_some_and(|t| t.state == TaskState::Pending))
             .take(available_slots)
             .collect()
     }

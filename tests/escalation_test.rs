@@ -67,10 +67,7 @@ fn test_route_cc_first() {
 fn test_route_config_override() {
     // Override: move "conflict" from cc_first (its default) to auto_approve via config.
     let config = EscalationConfig {
-        auto_approve: vec![
-            "implementation_choice".to_string(),
-            "conflict".to_string(),
-        ],
+        auto_approve: vec!["implementation_choice".to_string(), "conflict".to_string()],
         always_user: vec![],
         cc_first: vec![],
         ..Default::default()
