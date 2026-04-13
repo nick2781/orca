@@ -65,8 +65,8 @@ async fn main() -> Result<()> {
         Commands::Setup { action } => handle_setup(action),
         Commands::Config => handle_config(&config),
         Commands::McpServer => {
-            println!("MCP server not implemented yet");
-            Ok(())
+            let socket_path = config.socket_path(&project_dir);
+            orca::mcp::run_mcp_server(socket_path).await
         }
     }
 }
