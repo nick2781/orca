@@ -72,7 +72,11 @@ impl StateStore {
     }
 
     /// Append an event to the ledger.jsonl file.
-    pub fn log_event(&self, event: impl Into<String>, data: serde_json::Value) -> anyhow::Result<()> {
+    pub fn log_event(
+        &self,
+        event: impl Into<String>,
+        data: serde_json::Value,
+    ) -> anyhow::Result<()> {
         let entry = LedgerEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             event: event.into(),

@@ -1,10 +1,10 @@
+pub mod cli;
 pub mod config;
+pub mod daemon;
 pub mod escalation;
+pub mod isolation;
+pub mod mcp;
 pub mod protocol;
+pub mod terminal;
 pub mod types;
 pub mod worker;
-pub mod daemon;
-pub mod isolation;
-pub mod terminal;
-pub mod mcp;
-pub mod cli;

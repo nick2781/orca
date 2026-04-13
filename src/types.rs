@@ -15,7 +15,7 @@ pub struct TaskSpec {
 }
 
 /// Contextual information provided to a worker for task execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskContext {
     pub files: Vec<String>,
     pub references: Vec<String>,
@@ -162,15 +162,7 @@ impl Default for IsolationMode {
     }
 }
 
-impl Default for TaskContext {
-    fn default() -> Self {
-        Self {
-            files: Vec::new(),
-            references: Vec::new(),
-            constraints: Vec::new(),
-        }
-    }
-}
+
 
 impl TaskSpec {
     /// Create a new TaskSpec with sensible defaults.

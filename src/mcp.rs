@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
-use rmcp::{ServiceExt, tool, tool_box};
+use rmcp::{tool, tool_box, ServiceExt};
 use serde_json::Value;
 use tracing::info;
 
@@ -35,8 +35,7 @@ impl OrcaMcp {
                 if let Some(err) = resp.error {
                     format!("error: {} (code {})", err.message, err.code)
                 } else if let Some(result) = resp.result {
-                    serde_json::to_string_pretty(&result)
-                        .unwrap_or_else(|_| result.to_string())
+                    serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
                 } else {
                     "ok".to_string()
                 }
@@ -54,11 +53,9 @@ impl OrcaMcp {
     /// multiple Codex workers. The daemon decomposes the plan into tasks,
     /// assigns git worktrees, and launches workers.
     #[tool(description = "Submit an execution plan to the orca orchestrator")]
-    async fn orca_plan(
-        &self,
-        #[tool(param)] plan: Value,
-    ) -> String {
-        self.rpc_call("orca_plan", serde_json::json!({ "plan": plan })).await
+    async fn orca_plan(&self, #[tool(param)] plan: Value) -> String {
+        self.rpc_call("orca_plan", serde_json::json!({ "plan": plan }))
+            .await
     }
 
     /// Get the current status of all tasks managed by the orchestrator,
@@ -70,17 +67,19 @@ impl OrcaMcp {
         #[serde(default)]
         filter: Option<String>,
     ) -> String {
-        self.rpc_call("orca_status", serde_json::json!({ "filter": filter })).await
+        self.rpc_call("orca_status", serde_json::json!({ "filter": filter }))
+            .await
     }
 
     /// Get detailed information about a specific task including its logs,
     /// current state, assigned worker, and git branch.
     #[tool(description = "Get detailed info for a specific task")]
-    async fn orca_task_detail(
-        &self,
-        #[tool(param)] task_id: String,
-    ) -> String {
-        self.rpc_call("orca_task_detail", serde_json::json!({ "task_id": task_id })).await
+    async fn orca_task_detail(&self, #[tool(param)] task_id: String) -> String {
+        self.rpc_call(
+            "orca_task_detail",
+            serde_json::json!({ "task_id": task_id }),
+        )
+        .await
     }
 
     /// Respond to a pending escalation from a worker. Escalations occur when
@@ -130,27 +129,24 @@ impl OrcaMcp {
     /// Cancel a running or pending task. The worker process is terminated
     /// and the worktree is cleaned up.
     #[tool(description = "Cancel a running or pending task")]
-    async fn orca_cancel(
-        &self,
-        #[tool(param)] task_id: String,
-    ) -> String {
-        self.rpc_call("orca_cancel", serde_json::json!({ "task_id": task_id })).await
+    async fn orca_cancel(&self, #[tool(param)] task_id: String) -> String {
+        self.rpc_call("orca_cancel", serde_json::json!({ "task_id": task_id }))
+            .await
     }
 
     /// List all connected workers and their current assignments.
     #[tool(description = "List connected workers and their assignments")]
     async fn orca_worker_list(&self) -> String {
-        self.rpc_call("orca_worker_list", serde_json::json!({})).await
+        self.rpc_call("orca_worker_list", serde_json::json!({}))
+            .await
     }
 
     /// Merge the git branches of multiple accepted tasks back into the
     /// target branch. Tasks must be in the "accepted" state.
     #[tool(description = "Merge accepted task branches into target branch")]
-    async fn orca_merge(
-        &self,
-        #[tool(param)] task_ids: Vec<String>,
-    ) -> String {
-        self.rpc_call("orca_merge", serde_json::json!({ "task_ids": task_ids })).await
+    async fn orca_merge(&self, #[tool(param)] task_ids: Vec<String>) -> String {
+        self.rpc_call("orca_merge", serde_json::json!({ "task_ids": task_ids }))
+            .await
     }
 }
 
@@ -160,9 +156,7 @@ impl ServerHandler for OrcaMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: Default::default(),
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
                 name: "orca".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
@@ -179,7 +173,10 @@ impl ServerHandler for OrcaMcp {
 /// Start the MCP server on stdio transport. This is the entry point called
 /// by `orca mcp-server`.
 pub async fn run_mcp_server(socket_path: PathBuf) -> Result<()> {
-    info!("starting MCP server, daemon socket: {}", socket_path.display());
+    info!(
+        "starting MCP server, daemon socket: {}",
+        socket_path.display()
+    );
 
     let server = OrcaMcp::new(socket_path);
     let transport = rmcp::transport::stdio();

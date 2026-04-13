@@ -1,18 +1,18 @@
 pub mod daemon_cmd;
-pub mod task_cmd;
-pub mod worker_cmd;
 pub mod plan_cmd;
 pub mod review_cmd;
 pub mod setup_cmd;
+pub mod task_cmd;
+pub mod worker_cmd;
 
 use clap::Subcommand;
 
 use self::daemon_cmd::DaemonAction;
-use self::task_cmd::TaskAction;
-use self::worker_cmd::WorkerAction;
 use self::plan_cmd::PlanAction;
 use self::review_cmd::ReviewAction;
 use self::setup_cmd::SetupAction;
+use self::task_cmd::TaskAction;
+use self::worker_cmd::WorkerAction;
 
 /// Top-level subcommands for the Orca CLI.
 #[derive(Debug, Subcommand)]

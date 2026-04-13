@@ -40,11 +40,13 @@ pub fn parse_worker_line(line: &str) -> WorkerMessage {
         }
     } else if let Some(rest) = trimmed.strip_prefix(MARKER_ESCALATE) {
         let payload = rest.trim();
-        let value = serde_json::from_str(payload).unwrap_or(serde_json::Value::String(payload.to_string()));
+        let value =
+            serde_json::from_str(payload).unwrap_or(serde_json::Value::String(payload.to_string()));
         WorkerMessage::Escalate(value)
     } else if let Some(rest) = trimmed.strip_prefix(MARKER_BLOCKED) {
         let payload = rest.trim();
-        let value = serde_json::from_str(payload).unwrap_or(serde_json::Value::String(payload.to_string()));
+        let value =
+            serde_json::from_str(payload).unwrap_or(serde_json::Value::String(payload.to_string()));
         WorkerMessage::Blocked(value)
     } else if let Some(rest) = trimmed.strip_prefix(MARKER_PROGRESS) {
         WorkerMessage::Progress(rest.trim().to_string())

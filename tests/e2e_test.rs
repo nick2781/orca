@@ -4,8 +4,8 @@ use std::process::Command;
 use serde_json::json;
 
 use orca::config::Config;
-use orca::daemon::Daemon;
 use orca::daemon::server::IpcClient;
+use orca::daemon::Daemon;
 use orca::protocol::{RpcRequest, RpcResponse};
 
 /// Connect a fresh IpcClient, send one request, and return the response.
@@ -34,7 +34,11 @@ async fn test_daemon_plan_lifecycle() {
         .current_dir(&project_dir)
         .output()
         .expect("git commit");
-    assert!(git_commit.status.success(), "git commit failed: {}", String::from_utf8_lossy(&git_commit.stderr));
+    assert!(
+        git_commit.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&git_commit.stderr)
+    );
 
     // 3. Create .orca/ directory and Config
     let orca_dir = project_dir.join(".orca");
@@ -84,10 +88,16 @@ async fn test_daemon_plan_lifecycle() {
     });
 
     let resp = fresh_call(&socket_path, "orca_plan", plan).await;
-    assert!(resp.error.is_none(), "plan should succeed: {:?}", resp.error);
+    assert!(
+        resp.error.is_none(),
+        "plan should succeed: {:?}",
+        resp.error
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["plan_id"], "e2e-plan");
-    let tasks = result["tasks"].as_array().expect("tasks should be an array");
+    let tasks = result["tasks"]
+        .as_array()
+        .expect("tasks should be an array");
     assert_eq!(tasks.len(), 2, "should have 2 tasks");
 
     // --- Test status ---
@@ -99,15 +109,27 @@ async fn test_daemon_plan_lifecycle() {
 
     // --- Test task detail (existing task) ---
     let resp = fresh_call(&socket_path, "orca_task_detail", json!({"task_id": "t1"})).await;
-    assert!(resp.error.is_none(), "task_detail for t1 should succeed: {:?}", resp.error);
+    assert!(
+        resp.error.is_none(),
+        "task_detail for t1 should succeed: {:?}",
+        resp.error
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["spec"]["id"], "t1");
     assert_eq!(result["spec"]["title"], "Task 1");
     assert_eq!(result["state"], "pending");
 
     // --- Test task detail (nonexistent task) ---
-    let resp = fresh_call(&socket_path, "orca_task_detail", json!({"task_id": "nonexistent"})).await;
-    assert!(resp.result.is_none(), "nonexistent task should return error");
+    let resp = fresh_call(
+        &socket_path,
+        "orca_task_detail",
+        json!({"task_id": "nonexistent"}),
+    )
+    .await;
+    assert!(
+        resp.result.is_none(),
+        "nonexistent task should return error"
+    );
     assert!(resp.error.is_some(), "nonexistent task should have error");
     assert_eq!(resp.error.unwrap().code, orca::protocol::TASK_NOT_FOUND);
 

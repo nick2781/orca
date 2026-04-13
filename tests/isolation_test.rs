@@ -46,16 +46,8 @@ fn test_auto_no_overlap_uses_worktree() {
 #[test]
 fn test_auto_with_overlap_uses_serial() {
     let mgr = make_manager();
-    let task = make_task(
-        "t1",
-        vec!["src/shared.rs", "src/a.rs"],
-        IsolationMode::Auto,
-    );
-    let running = make_task(
-        "t2",
-        vec!["src/shared.rs", "src/b.rs"],
-        IsolationMode::Auto,
-    );
+    let task = make_task("t1", vec!["src/shared.rs", "src/a.rs"], IsolationMode::Auto);
+    let running = make_task("t2", vec!["src/shared.rs", "src/b.rs"], IsolationMode::Auto);
 
     let decision = mgr.decide(&task, &[&running]);
 

@@ -31,16 +31,10 @@ impl DependencyGraph {
         // Populate from edges
         for edge in edges {
             if !task_ids.contains(&edge.from) {
-                return Err(format!(
-                    "edge references unknown task: '{}'",
-                    edge.from
-                ));
+                return Err(format!("edge references unknown task: '{}'", edge.from));
             }
             if !task_ids.contains(&edge.to) {
-                return Err(format!(
-                    "edge references unknown task: '{}'",
-                    edge.to
-                ));
+                return Err(format!("edge references unknown task: '{}'", edge.to));
             }
             // edge.from must complete before edge.to can start
             // so edge.to depends on edge.from
@@ -102,8 +96,7 @@ impl DependencyGraph {
 
     /// Return the set of direct dependencies for a given task.
     pub fn dependencies_of(&self, task_id: &str) -> &HashSet<String> {
-        static EMPTY: std::sync::LazyLock<HashSet<String>> =
-            std::sync::LazyLock::new(HashSet::new);
+        static EMPTY: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(HashSet::new);
         self.deps.get(task_id).unwrap_or(&EMPTY)
     }
 }
@@ -142,9 +135,7 @@ impl Scheduler {
             .filter(|(_, t)| {
                 matches!(
                     t.state,
-                    TaskState::Done
-                        | TaskState::Completed
-                        | TaskState::Accepted
+                    TaskState::Done | TaskState::Completed | TaskState::Accepted
                 )
             })
             .map(|(id, _)| id.clone())
@@ -157,7 +148,7 @@ impl Scheduler {
             .filter(|id| {
                 tasks
                     .get(id)
-                    .map_or(false, |t| t.state == TaskState::Pending)
+                    .is_some_and(|t| t.state == TaskState::Pending)
             })
             .take(available_slots)
             .collect()
@@ -200,8 +191,14 @@ mod tests {
     fn test_linear_chain() {
         let tasks = vec![make_spec("t1"), make_spec("t2"), make_spec("t3")];
         let edges = vec![
-            Edge { from: "t1".into(), to: "t2".into() },
-            Edge { from: "t2".into(), to: "t3".into() },
+            Edge {
+                from: "t1".into(),
+                to: "t2".into(),
+            },
+            Edge {
+                from: "t2".into(),
+                to: "t3".into(),
+            },
         ];
         let graph = DependencyGraph::new(&tasks, &edges).unwrap();
 
@@ -225,8 +222,14 @@ mod tests {
     fn test_cycle_detected() {
         let tasks = vec![make_spec("t1"), make_spec("t2")];
         let edges = vec![
-            Edge { from: "t1".into(), to: "t2".into() },
-            Edge { from: "t2".into(), to: "t1".into() },
+            Edge {
+                from: "t1".into(),
+                to: "t2".into(),
+            },
+            Edge {
+                from: "t2".into(),
+                to: "t1".into(),
+            },
         ];
         let result = DependencyGraph::new(&tasks, &edges);
         assert!(result.is_err());

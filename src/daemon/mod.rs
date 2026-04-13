@@ -171,7 +171,10 @@ fn handle_plan(
     }
 
     // Log the event.
-    let _ = store.log_event("plan_loaded", json!({"plan_id": plan.id, "task_count": task_ids.len()}));
+    let _ = store.log_event(
+        "plan_loaded",
+        json!({"plan_id": plan.id, "task_count": task_ids.len()}),
+    );
 
     drop(store);
 
@@ -189,11 +192,7 @@ fn handle_plan(
 }
 
 /// Return tasks (optionally filtered by state) and pending escalations.
-fn handle_status(
-    id: Value,
-    params: Value,
-    state: &Arc<Mutex<StateStore>>,
-) -> RpcResponse {
+fn handle_status(id: Value, params: Value, state: &Arc<Mutex<StateStore>>) -> RpcResponse {
     let store = state.lock().unwrap();
 
     let state_filter: Option<String> = params
@@ -206,9 +205,8 @@ fn handle_status(
         .into_iter()
         .filter(|(_, task)| {
             if let Some(ref filter) = state_filter {
-                let task_state = serde_json::to_value(&task.state)
-                    .unwrap_or(Value::Null);
-                task_state.as_str().map_or(false, |s| s == filter)
+                let task_state = serde_json::to_value(task.state).unwrap_or(Value::Null);
+                task_state.as_str().is_some_and(|s| s == filter)
             } else {
                 true
             }
@@ -246,11 +244,7 @@ fn handle_status(
 }
 
 /// Return full details for a single task.
-fn handle_task_detail(
-    id: Value,
-    params: Value,
-    state: &Arc<Mutex<StateStore>>,
-) -> RpcResponse {
+fn handle_task_detail(id: Value, params: Value, state: &Arc<Mutex<StateStore>>) -> RpcResponse {
     let task_id = match params.get("task_id").and_then(|v| v.as_str()) {
         Some(tid) => tid.to_string(),
         None => {
@@ -283,11 +277,7 @@ fn handle_task_detail(
 }
 
 /// Resolve an escalation: remove it from state and resume the blocked task.
-fn handle_decide(
-    id: Value,
-    params: Value,
-    state: &Arc<Mutex<StateStore>>,
-) -> RpcResponse {
+fn handle_decide(id: Value, params: Value, state: &Arc<Mutex<StateStore>>) -> RpcResponse {
     let escalation_id = match params.get("escalation_id").and_then(|v| v.as_str()) {
         Some(eid) => eid.to_string(),
         None => {
@@ -351,11 +341,7 @@ fn handle_decide(
 }
 
 /// Transition a task to Accepted or Rejected (only valid from Review state).
-fn handle_review(
-    id: Value,
-    params: Value,
-    state: &Arc<Mutex<StateStore>>,
-) -> RpcResponse {
+fn handle_review(id: Value, params: Value, state: &Arc<Mutex<StateStore>>) -> RpcResponse {
     let task_id = match params.get("task_id").and_then(|v| v.as_str()) {
         Some(tid) => tid.to_string(),
         None => {
@@ -392,7 +378,9 @@ fn handle_review(
                 id,
                 RpcError {
                     code: INVALID_PARAMS,
-                    message: format!("invalid verdict: {verdict} (must be 'accepted' or 'rejected')"),
+                    message: format!(
+                        "invalid verdict: {verdict} (must be 'accepted' or 'rejected')"
+                    ),
                     data: None,
                 },
             );
@@ -421,10 +409,7 @@ fn handle_review(
             id,
             RpcError {
                 code: INVALID_STATE_TRANSITION,
-                message: format!(
-                    "task {task_id} is in state {:?}, not Review",
-                    task.state
-                ),
+                message: format!("task {task_id} is in state {:?}, not Review", task.state),
                 data: None,
             },
         );
@@ -457,11 +442,7 @@ fn handle_review(
 }
 
 /// Cancel a task (transition to Cancelled).
-fn handle_cancel(
-    id: Value,
-    params: Value,
-    state: &Arc<Mutex<StateStore>>,
-) -> RpcResponse {
+fn handle_cancel(id: Value, params: Value, state: &Arc<Mutex<StateStore>>) -> RpcResponse {
     let task_id = match params.get("task_id").and_then(|v| v.as_str()) {
         Some(tid) => tid.to_string(),
         None => {
@@ -510,10 +491,7 @@ fn handle_cancel(
 }
 
 /// Return all registered workers.
-fn handle_worker_list(
-    id: Value,
-    state: &Arc<Mutex<StateStore>>,
-) -> RpcResponse {
+fn handle_worker_list(id: Value, state: &Arc<Mutex<StateStore>>) -> RpcResponse {
     let store = state.lock().unwrap();
 
     let workers: Vec<Value> = store
@@ -527,11 +505,7 @@ fn handle_worker_list(
 }
 
 /// Return merge info for tasks that have branch names.
-fn handle_merge(
-    id: Value,
-    params: Value,
-    state: &Arc<Mutex<StateStore>>,
-) -> RpcResponse {
+fn handle_merge(id: Value, params: Value, state: &Arc<Mutex<StateStore>>) -> RpcResponse {
     let task_id = match params.get("task_id").and_then(|v| v.as_str()) {
         Some(tid) => tid.to_string(),
         None => {
@@ -622,7 +596,15 @@ mod tests {
             params,
         };
 
-        handle_request(req, state, scheduler, config, worker, isolation, project_dir)
+        handle_request(
+            req,
+            state,
+            scheduler,
+            config,
+            worker,
+            isolation,
+            project_dir,
+        )
     }
 
     fn dispatch_with_state(
@@ -702,7 +684,11 @@ mod tests {
         });
 
         let resp = dispatch_with_state("orca_plan", plan, &state, &scheduler);
-        assert!(resp.error.is_none(), "expected success, got: {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "expected success, got: {:?}",
+            resp.error
+        );
         let result = resp.result.unwrap();
         assert_eq!(result["plan_id"], "plan-1");
 
@@ -796,12 +782,22 @@ mod tests {
         dispatch_with_state("orca_plan", plan, &state, &scheduler);
 
         // Filter by "pending" should return the task.
-        let resp = dispatch_with_state("orca_status", json!({"state": "pending"}), &state, &scheduler);
+        let resp = dispatch_with_state(
+            "orca_status",
+            json!({"state": "pending"}),
+            &state,
+            &scheduler,
+        );
         let result = resp.result.unwrap();
         assert_eq!(result["tasks"].as_array().unwrap().len(), 1);
 
         // Filter by "running" should return nothing.
-        let resp = dispatch_with_state("orca_status", json!({"state": "running"}), &state, &scheduler);
+        let resp = dispatch_with_state(
+            "orca_status",
+            json!({"state": "running"}),
+            &state,
+            &scheduler,
+        );
         let result = resp.result.unwrap();
         assert_eq!(result["tasks"].as_array().unwrap().len(), 0);
     }
@@ -827,7 +823,12 @@ mod tests {
         });
         dispatch_with_state("orca_plan", plan, &state, &scheduler);
 
-        let resp = dispatch_with_state("orca_task_detail", json!({"task_id": "t1"}), &state, &scheduler);
+        let resp = dispatch_with_state(
+            "orca_task_detail",
+            json!({"task_id": "t1"}),
+            &state,
+            &scheduler,
+        );
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["spec"]["title"], "Test Task");
@@ -882,7 +883,11 @@ mod tests {
             &state,
             &scheduler,
         );
-        assert!(resp.error.is_none(), "expected success, got: {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "expected success, got: {:?}",
+            resp.error
+        );
         assert_eq!(resp.result.unwrap()["verdict"], "accepted");
 
         let store = state.lock().unwrap();
@@ -980,12 +985,7 @@ mod tests {
         dispatch_with_state("orca_plan", plan, &state, &scheduler);
 
         // Pending cannot transition to Cancelled (only Assigned/Running can).
-        let resp = dispatch_with_state(
-            "orca_cancel",
-            json!({"task_id": "t1"}),
-            &state,
-            &scheduler,
-        );
+        let resp = dispatch_with_state("orca_cancel", json!({"task_id": "t1"}), &state, &scheduler);
         // Should fail because Pending -> Cancelled is not a valid transition.
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, INVALID_STATE_TRANSITION);
@@ -1014,12 +1014,7 @@ mod tests {
             task.transition_to(TaskState::Assigned).unwrap();
         }
 
-        let resp = dispatch_with_state(
-            "orca_cancel",
-            json!({"task_id": "t1"}),
-            &state,
-            &scheduler,
-        );
+        let resp = dispatch_with_state("orca_cancel", json!({"task_id": "t1"}), &state, &scheduler);
         assert!(resp.error.is_none());
 
         let store = state.lock().unwrap();
@@ -1079,7 +1074,11 @@ mod tests {
             &state,
             &scheduler,
         );
-        assert!(resp.error.is_none(), "expected success, got: {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "expected success, got: {:?}",
+            resp.error
+        );
 
         let store = state.lock().unwrap();
         // Task should be resumed to Running.
@@ -1129,12 +1128,7 @@ mod tests {
             task.worktree_path = Some("/tmp/worktree/t1".to_string());
         }
 
-        let resp = dispatch_with_state(
-            "orca_merge",
-            json!({"task_id": "t1"}),
-            &state,
-            &scheduler,
-        );
+        let resp = dispatch_with_state("orca_merge", json!({"task_id": "t1"}), &state, &scheduler);
         assert!(resp.error.is_none());
         let result = resp.result.unwrap();
         assert_eq!(result["branch_name"], "orca/t1");

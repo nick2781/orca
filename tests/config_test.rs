@@ -20,10 +20,17 @@ fn test_default_config() {
     assert_eq!(config.isolation.default_strategy, "auto");
     assert_eq!(config.isolation.target_branch, "main");
 
-    assert_eq!(config.escalation.auto_approve, vec!["implementation_choice"]);
+    assert_eq!(
+        config.escalation.auto_approve,
+        vec!["implementation_choice"]
+    );
     assert_eq!(
         config.escalation.always_user,
-        vec!["architecture_change", "destructive_operation", "scope_exceeded"]
+        vec![
+            "architecture_change",
+            "destructive_operation",
+            "scope_exceeded"
+        ]
     );
     assert_eq!(
         config.escalation.cc_first,

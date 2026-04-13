@@ -1,4 +1,4 @@
-use orca::types::{TaskContext, TaskOutput, TaskSpec};
+use orca::types::{TaskContext, TaskSpec};
 use orca::worker::codex::{
     generate_prompt, parse_worker_line, MARKER_BLOCKED, MARKER_DONE, MARKER_ESCALATE,
     MARKER_PROGRESS,
@@ -74,7 +74,10 @@ fn test_parse_progress_marker() {
     let line = format!("{} compiling module 3/5", MARKER_PROGRESS);
     let msg = parse_worker_line(&line);
 
-    assert_eq!(msg, WorkerMessage::Progress("compiling module 3/5".to_string()));
+    assert_eq!(
+        msg,
+        WorkerMessage::Progress("compiling module 3/5".to_string())
+    );
 }
 
 #[test]
@@ -104,7 +107,10 @@ fn test_generate_prompt() {
     let prompt = generate_prompt(&task, "/tmp/workdir");
 
     // Verify prompt contains task title and description
-    assert!(prompt.contains("Add login endpoint"), "should contain task title");
+    assert!(
+        prompt.contains("Add login endpoint"),
+        "should contain task title"
+    );
     assert!(
         prompt.contains("Implement POST /api/login with JWT"),
         "should contain task description"
@@ -118,14 +124,29 @@ fn test_generate_prompt() {
     assert!(prompt.contains("src/handler.rs"), "should contain file");
 
     // Verify prompt contains constraints
-    assert!(prompt.contains("no unsafe code"), "should contain constraint");
+    assert!(
+        prompt.contains("no unsafe code"),
+        "should contain constraint"
+    );
 
     // Verify prompt contains references
-    assert!(prompt.contains("docs/auth-spec.md"), "should contain reference");
+    assert!(
+        prompt.contains("docs/auth-spec.md"),
+        "should contain reference"
+    );
 
     // Verify prompt contains all markers in the rules section
     assert!(prompt.contains(MARKER_DONE), "should explain DONE marker");
-    assert!(prompt.contains(MARKER_ESCALATE), "should explain ESCALATE marker");
-    assert!(prompt.contains(MARKER_BLOCKED), "should explain BLOCKED marker");
-    assert!(prompt.contains(MARKER_PROGRESS), "should explain PROGRESS marker");
+    assert!(
+        prompt.contains(MARKER_ESCALATE),
+        "should explain ESCALATE marker"
+    );
+    assert!(
+        prompt.contains(MARKER_BLOCKED),
+        "should explain BLOCKED marker"
+    );
+    assert!(
+        prompt.contains(MARKER_PROGRESS),
+        "should explain PROGRESS marker"
+    );
 }

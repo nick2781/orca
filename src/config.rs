@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// Top-level configuration for Orca.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub daemon: DaemonConfig,
@@ -34,7 +34,7 @@ pub struct TerminalConfig {
 }
 
 /// Container for per-worker-type configurations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkerConfigs {
     pub codex: Option<WorkerConfig>,
@@ -80,18 +80,7 @@ pub struct NotificationConfig {
 
 // --- Default implementations ---
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            daemon: DaemonConfig::default(),
-            terminal: TerminalConfig::default(),
-            worker: WorkerConfigs::default(),
-            isolation: IsolationConfig::default(),
-            escalation: EscalationConfig::default(),
-            notification: NotificationConfig::default(),
-        }
-    }
-}
+
 
 impl Default for DaemonConfig {
     fn default() -> Self {
@@ -113,11 +102,6 @@ impl Default for TerminalConfig {
     }
 }
 
-impl Default for WorkerConfigs {
-    fn default() -> Self {
-        Self { codex: None }
-    }
-}
 
 impl Default for WorkerConfig {
     fn default() -> Self {

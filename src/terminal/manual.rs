@@ -14,7 +14,10 @@ impl Terminal for ManualTerminal {
         println!("┌{border}┐");
         println!("│ {:^60} │", format!("Worker: {label}"));
         println!("├{border}┤");
-        println!("│ {:60} │", "Please run the following command in a new terminal:");
+        println!(
+            "│ {:60} │",
+            "Please run the following command in a new terminal:"
+        );
         println!("│ {:60} │", "");
         println!("│ {:60} │", format!("  {cmd}"));
         println!("│ {:60} │", "");

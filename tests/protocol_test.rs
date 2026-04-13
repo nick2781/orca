@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use orca::protocol::{RpcRequest, RpcResponse, RpcError, METHOD_NOT_FOUND};
 use orca::daemon::server::{IpcClient, IpcServer};
+use orca::protocol::{RpcError, RpcRequest, RpcResponse, METHOD_NOT_FOUND};
 
 #[test]
 fn test_rpc_request_serialization() {

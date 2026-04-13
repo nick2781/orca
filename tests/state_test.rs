@@ -38,7 +38,10 @@ fn test_ledger_append() {
         .log_event("task_created", serde_json::json!({"id": "t1"}))
         .unwrap();
     store
-        .log_event("task_assigned", serde_json::json!({"id": "t1", "worker": "w1"}))
+        .log_event(
+            "task_assigned",
+            serde_json::json!({"id": "t1", "worker": "w1"}),
+        )
         .unwrap();
 
     let ledger = std::fs::read_to_string(orca_dir.join("ledger.jsonl")).unwrap();

@@ -1,23 +1,27 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use serde_json::json;
 
-use orca::cli::{Commands, EscalationAction};
 use orca::cli::daemon_cmd::DaemonAction;
-use orca::cli::task_cmd::TaskAction;
-use orca::cli::worker_cmd::WorkerAction;
 use orca::cli::plan_cmd::PlanAction;
 use orca::cli::review_cmd::ReviewAction;
 use orca::cli::setup_cmd::SetupAction;
+use orca::cli::task_cmd::TaskAction;
+use orca::cli::worker_cmd::WorkerAction;
+use orca::cli::{Commands, EscalationAction};
 use orca::config::Config;
-use orca::daemon::Daemon;
 use orca::daemon::server::IpcClient;
+use orca::daemon::Daemon;
 use orca::protocol::{RpcRequest, RpcResponse};
 
 #[derive(Parser)]
-#[command(name = "orca", version, about = "Multi-agent orchestrator: Claude Code brain + Codex workers")]
+#[command(
+    name = "orca",
+    version,
+    about = "Multi-agent orchestrator: Claude Code brain + Codex workers"
+)]
 struct Cli {
     /// Project directory (defaults to current directory)
     #[arg(long, global = true)]
@@ -31,11 +35,11 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let project_dir = cli.project_dir
+    let project_dir = cli
+        .project_dir
         .unwrap_or_else(|| std::env::current_dir().expect("failed to get current directory"));
 
-    let config = Config::load(&project_dir)
-        .unwrap_or_else(|_| Config::default());
+    let config = Config::load(&project_dir).unwrap_or_else(|_| Config::default());
 
     let command = match cli.command {
         Some(cmd) => cmd,
@@ -52,12 +56,11 @@ async fn main() -> Result<()> {
         Commands::Worker { action } => handle_worker(action, &config, &project_dir).await,
         Commands::Plan { action } => handle_plan(action, &config, &project_dir).await,
         Commands::Review { action } => handle_review(action, &config, &project_dir).await,
-        Commands::Merge { task_ids, all_accepted } => {
-            handle_merge(task_ids, all_accepted, &config, &project_dir).await
-        }
-        Commands::Escalation { action } => {
-            handle_escalation(action, &config, &project_dir).await
-        }
+        Commands::Merge {
+            task_ids,
+            all_accepted,
+        } => handle_merge(task_ids, all_accepted, &config, &project_dir).await,
+        Commands::Escalation { action } => handle_escalation(action, &config, &project_dir).await,
         Commands::Init => handle_init(&project_dir),
         Commands::Setup { action } => handle_setup(action),
         Commands::Config => handle_config(&config),
@@ -70,26 +73,26 @@ async fn main() -> Result<()> {
 
 // -- Daemon ------------------------------------------------------------------
 
-async fn handle_daemon(action: DaemonAction, config: Config, project_dir: &PathBuf) -> Result<()> {
+async fn handle_daemon(action: DaemonAction, config: Config, project_dir: &Path) -> Result<()> {
     match action {
         DaemonAction::Start { foreground: _ } => {
             tracing_subscriber::fmt()
                 .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| {
-                            tracing_subscriber::EnvFilter::new(&config.daemon.log_level)
-                        }),
+                    tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                        tracing_subscriber::EnvFilter::new(&config.daemon.log_level)
+                    }),
                 )
                 .init();
 
-            let daemon = Daemon::new(config, project_dir.clone())?;
+            let daemon = Daemon::new(config, project_dir.to_path_buf())?;
             daemon.run().await
         }
         DaemonAction::Stop => {
             let socket_path = config.socket_path(project_dir);
             if socket_path.exists() {
-                std::fs::remove_file(&socket_path)
-                    .with_context(|| format!("failed to remove socket {}", socket_path.display()))?;
+                std::fs::remove_file(&socket_path).with_context(|| {
+                    format!("failed to remove socket {}", socket_path.display())
+                })?;
                 println!("Daemon stopped (socket removed: {})", socket_path.display());
             } else {
                 println!("No daemon socket found at {}", socket_path.display());
@@ -114,7 +117,10 @@ async fn handle_daemon(action: DaemonAction, config: Config, project_dir: &PathB
                     }
                 }
                 Err(_) => {
-                    println!("Daemon is not running (no socket at {})", socket_path.display());
+                    println!(
+                        "Daemon is not running (no socket at {})",
+                        socket_path.display()
+                    );
                 }
             }
             Ok(())
@@ -124,7 +130,7 @@ async fn handle_daemon(action: DaemonAction, config: Config, project_dir: &PathB
 
 // -- Task --------------------------------------------------------------------
 
-async fn handle_task(action: TaskAction, config: &Config, project_dir: &PathBuf) -> Result<()> {
+async fn handle_task(action: TaskAction, config: &Config, project_dir: &Path) -> Result<()> {
     let socket_path = config.socket_path(project_dir);
 
     match action {
@@ -146,7 +152,12 @@ async fn handle_task(action: TaskAction, config: &Config, project_dir: &PathBuf)
         }
         TaskAction::Retry { id } => {
             // Retry transitions a rejected task back to pending
-            let resp = ipc_call(&socket_path, "orca_review", json!({"task_id": id, "verdict": "retry"})).await?;
+            let resp = ipc_call(
+                &socket_path,
+                "orca_review",
+                json!({"task_id": id, "verdict": "retry"}),
+            )
+            .await?;
             print_response(&resp);
         }
     }
@@ -156,7 +167,7 @@ async fn handle_task(action: TaskAction, config: &Config, project_dir: &PathBuf)
 
 // -- Worker ------------------------------------------------------------------
 
-async fn handle_worker(action: WorkerAction, config: &Config, project_dir: &PathBuf) -> Result<()> {
+async fn handle_worker(action: WorkerAction, config: &Config, project_dir: &Path) -> Result<()> {
     let socket_path = config.socket_path(project_dir);
 
     match action {
@@ -183,7 +194,7 @@ async fn handle_worker(action: WorkerAction, config: &Config, project_dir: &Path
 
 // -- Plan --------------------------------------------------------------------
 
-async fn handle_plan(action: PlanAction, config: &Config, project_dir: &PathBuf) -> Result<()> {
+async fn handle_plan(action: PlanAction, config: &Config, project_dir: &Path) -> Result<()> {
     let socket_path = config.socket_path(project_dir);
 
     match action {
@@ -202,7 +213,7 @@ async fn handle_plan(action: PlanAction, config: &Config, project_dir: &PathBuf)
 
 // -- Review ------------------------------------------------------------------
 
-async fn handle_review(action: ReviewAction, config: &Config, project_dir: &PathBuf) -> Result<()> {
+async fn handle_review(action: ReviewAction, config: &Config, project_dir: &Path) -> Result<()> {
     let socket_path = config.socket_path(project_dir);
 
     match action {
@@ -211,7 +222,8 @@ async fn handle_review(action: ReviewAction, config: &Config, project_dir: &Path
                 &socket_path,
                 "orca_review",
                 json!({"task_id": task_id, "verdict": "accepted"}),
-            ).await?;
+            )
+            .await?;
             print_response(&resp);
         }
         ReviewAction::Reject { task_id, feedback } => {
@@ -219,7 +231,8 @@ async fn handle_review(action: ReviewAction, config: &Config, project_dir: &Path
                 &socket_path,
                 "orca_review",
                 json!({"task_id": task_id, "verdict": "rejected", "feedback": feedback}),
-            ).await?;
+            )
+            .await?;
             print_response(&resp);
         }
     }
@@ -233,22 +246,20 @@ async fn handle_merge(
     task_ids: Vec<String>,
     all_accepted: bool,
     config: &Config,
-    project_dir: &PathBuf,
+    project_dir: &Path,
 ) -> Result<()> {
     let socket_path = config.socket_path(project_dir);
 
     if all_accepted {
         // Query status to find accepted tasks, then merge each
-        let status_resp = ipc_call(&socket_path, "orca_status", json!({"state": "accepted"})).await?;
+        let status_resp =
+            ipc_call(&socket_path, "orca_status", json!({"state": "accepted"})).await?;
         if let Some(result) = &status_resp.result {
             if let Some(tasks) = result.get("tasks").and_then(|t| t.as_array()) {
                 for task in tasks {
                     if let Some(tid) = task.get("id").and_then(|v| v.as_str()) {
-                        let resp = ipc_call(
-                            &socket_path,
-                            "orca_merge",
-                            json!({"task_id": tid}),
-                        ).await?;
+                        let resp =
+                            ipc_call(&socket_path, "orca_merge", json!({"task_id": tid})).await?;
                         print_response(&resp);
                     }
                 }
@@ -276,7 +287,7 @@ async fn handle_merge(
 async fn handle_escalation(
     action: EscalationAction,
     config: &Config,
-    project_dir: &PathBuf,
+    project_dir: &Path,
 ) -> Result<()> {
     let socket_path = config.socket_path(project_dir);
 
@@ -299,7 +310,8 @@ async fn handle_escalation(
                 &socket_path,
                 "orca_decide",
                 json!({"escalation_id": id, "decision": choice}),
-            ).await?;
+            )
+            .await?;
             print_response(&resp);
         }
     }
@@ -309,7 +321,7 @@ async fn handle_escalation(
 
 // -- Init --------------------------------------------------------------------
 
-fn handle_init(project_dir: &PathBuf) -> Result<()> {
+fn handle_init(project_dir: &Path) -> Result<()> {
     // Create .orca/ directory
     let orca_dir = project_dir.join(".orca");
     std::fs::create_dir_all(&orca_dir)
@@ -375,8 +387,7 @@ fn handle_init(project_dir: &PathBuf) -> Result<()> {
 fn handle_setup(action: SetupAction) -> Result<()> {
     match action {
         SetupAction::Mcp => {
-            let exe_path = std::env::current_exe()
-                .unwrap_or_else(|_| PathBuf::from("orca"));
+            let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("orca"));
 
             let mcp_config = json!({
                 "mcpServers": {
@@ -397,8 +408,7 @@ fn handle_setup(action: SetupAction) -> Result<()> {
 // -- Config ------------------------------------------------------------------
 
 fn handle_config(config: &Config) -> Result<()> {
-    let toml_str = toml::to_string_pretty(config)
-        .context("failed to serialize config")?;
+    let toml_str = toml::to_string_pretty(config).context("failed to serialize config")?;
     println!("{}", toml_str);
     Ok(())
 }
@@ -411,17 +421,15 @@ async fn ipc_call(
     method: &str,
     params: serde_json::Value,
 ) -> Result<RpcResponse> {
-    let mut client = IpcClient::connect(socket_path).await
-        .with_context(|| {
-            format!(
-                "failed to connect to daemon at {}. Is the daemon running? Try: orca daemon start",
-                socket_path.display()
-            )
-        })?;
+    let mut client = IpcClient::connect(socket_path).await.with_context(|| {
+        format!(
+            "failed to connect to daemon at {}. Is the daemon running? Try: orca daemon start",
+            socket_path.display()
+        )
+    })?;
 
     let request = RpcRequest::new(method, params);
-    client.call(&request).await
-        .context("RPC call failed")
+    client.call(&request).await.context("RPC call failed")
 }
 
 /// Print an RPC response as formatted JSON.
@@ -429,9 +437,15 @@ fn print_response(resp: &RpcResponse) {
     if let Some(ref error) = resp.error {
         eprintln!("Error: {} (code {})", error.message, error.code);
         if let Some(ref data) = error.data {
-            eprintln!("Details: {}", serde_json::to_string_pretty(data).unwrap_or_default());
+            eprintln!(
+                "Details: {}",
+                serde_json::to_string_pretty(data).unwrap_or_default()
+            );
         }
     } else if let Some(ref result) = resp.result {
-        println!("{}", serde_json::to_string_pretty(result).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(result).unwrap_or_default()
+        );
     }
 }
