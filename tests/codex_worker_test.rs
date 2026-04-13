@@ -1,7 +1,7 @@
 use orca::types::{TaskContext, TaskSpec};
 use orca::worker::codex::{
-    generate_prompt, parse_worker_line, MARKER_BLOCKED, MARKER_DONE, MARKER_ESCALATE,
-    MARKER_PROGRESS,
+    generate_agents_md, generate_prompt, parse_worker_line, MARKER_BLOCKED, MARKER_DONE,
+    MARKER_ESCALATE, MARKER_PROGRESS,
 };
 use orca::worker::WorkerMessage;
 
@@ -148,5 +148,128 @@ fn test_generate_prompt() {
     assert!(
         prompt.contains(MARKER_PROGRESS),
         "should explain PROGRESS marker"
+    );
+}
+
+#[test]
+fn test_parse_codex_json_message() {
+    let line = r#"{"type":"message","content":"I'll start by reading the file"}"#;
+    let msg = parse_worker_line(line);
+
+    assert_eq!(
+        msg,
+        WorkerMessage::Output("I'll start by reading the file".to_string())
+    );
+}
+
+#[test]
+fn test_parse_codex_json_result() {
+    let line = r#"{"type":"result","output":"file contents here"}"#;
+    let msg = parse_worker_line(line);
+
+    assert_eq!(
+        msg,
+        WorkerMessage::Output("file contents here".to_string())
+    );
+}
+
+#[test]
+fn test_parse_codex_json_unknown_type() {
+    let line = r#"{"type":"command","command":"cat file.rs"}"#;
+    let msg = parse_worker_line(line);
+
+    // Unknown Codex JSON types are still captured as Output with the raw JSON.
+    match msg {
+        WorkerMessage::Output(text) => {
+            assert!(
+                text.contains("command"),
+                "should contain the raw JSON content"
+            );
+        }
+        other => panic!("expected Output, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_marker_takes_priority() {
+    // Even if the payload looks like Codex JSON, the ORCA marker wins.
+    let json = r#"{"files_changed":["src/main.rs"],"tests_passed":true,"diff_summary":"done","stdout":"ok"}"#;
+    let line = format!("{} {}", MARKER_DONE, json);
+    let msg = parse_worker_line(&line);
+
+    match msg {
+        WorkerMessage::Done(output) => {
+            assert_eq!(output.files_changed, vec!["src/main.rs"]);
+            assert!(output.tests_passed);
+        }
+        other => panic!("expected Done, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_non_codex_json_is_plain_output() {
+    // JSON without a "type" field should NOT be parsed as Codex JSON.
+    let line = r#"{"key":"value","number":42}"#;
+    let msg = parse_worker_line(line);
+
+    assert_eq!(msg, WorkerMessage::Output(line.to_string()));
+}
+
+#[test]
+fn test_generate_agents_md() {
+    let task = TaskSpec {
+        id: "task-99".to_string(),
+        title: "Refactor auth module".to_string(),
+        description: "Extract JWT validation into a shared helper".to_string(),
+        context: TaskContext {
+            files: vec!["src/auth.rs".to_string(), "src/jwt.rs".to_string()],
+            references: vec![],
+            constraints: vec!["no breaking changes".to_string()],
+        },
+        isolation: orca::types::IsolationMode::Auto,
+        depends_on: vec![],
+        priority: 1,
+    };
+
+    let content = generate_agents_md(&task);
+
+    // Should contain all ORCA markers from the template.
+    assert!(
+        content.contains("[ORCA:DONE]"),
+        "should contain DONE marker"
+    );
+    assert!(
+        content.contains("[ORCA:PROGRESS]"),
+        "should contain PROGRESS marker"
+    );
+    assert!(
+        content.contains("[ORCA:ESCALATE]"),
+        "should contain ESCALATE marker"
+    );
+    assert!(
+        content.contains("[ORCA:BLOCKED]"),
+        "should contain BLOCKED marker"
+    );
+
+    // Should contain task-specific information.
+    assert!(
+        content.contains("Refactor auth module"),
+        "should contain task title"
+    );
+    assert!(
+        content.contains("Extract JWT validation"),
+        "should contain task description"
+    );
+    assert!(
+        content.contains("src/auth.rs"),
+        "should list scoped files"
+    );
+    assert!(
+        content.contains("src/jwt.rs"),
+        "should list scoped files"
+    );
+    assert!(
+        content.contains("no breaking changes"),
+        "should list constraints"
     );
 }
