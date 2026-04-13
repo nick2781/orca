@@ -25,7 +25,7 @@ Existing tools (oh-my-claudecode, claude-squad, CCCC, etc.) fall short:
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/user/orca/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
 ```
 
 Or build from source:

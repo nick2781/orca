@@ -25,7 +25,7 @@ Orca 让 Claude Code (CC) 充当大脑 —— 负责规划、审查和决策 —
 ## 安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/user/orca/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
 ```
 
 ## 快速开始

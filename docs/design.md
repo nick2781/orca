@@ -690,7 +690,7 @@ Project-level `orca.toml` overrides global config.
 
 ```bash
 # One-line install (download pre-built binary from GitHub Releases)
-curl -fsSL https://raw.githubusercontent.com/user/orca/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
 
 # Install script does:
 # 1. Detect OS + arch
@@ -704,7 +704,7 @@ curl -fsSL https://raw.githubusercontent.com/user/orca/main/install.sh | sh
 
 ```bash
 # 1. Install
-curl -fsSL https://raw.githubusercontent.com/user/orca/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
 
 # 2. Initialize project
 cd my-project && orca init

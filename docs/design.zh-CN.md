@@ -688,7 +688,7 @@ default_args = ["--full-auto", "-q"]
 
 ```bash
 # 一行安装（从 GitHub Releases 下载预编译二进制）
-curl -fsSL https://raw.githubusercontent.com/user/orca/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
 
 # 安装脚本做的事：
 # 1. 检测 OS + arch
@@ -702,7 +702,7 @@ curl -fsSL https://raw.githubusercontent.com/user/orca/main/install.sh | sh
 
 ```bash
 # 1. 安装
-curl -fsSL https://raw.githubusercontent.com/user/orca/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
 
 # 2. 初始化项目
 cd my-project && orca init

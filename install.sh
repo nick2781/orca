@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="user/orca"
+REPO="Nick2781/orca"
 INSTALL_DIR="$HOME/.orca/bin"
 BINARY="orca"
 
