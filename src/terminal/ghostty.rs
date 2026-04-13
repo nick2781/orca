@@ -5,19 +5,17 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::Terminal;
+use crate::config::TerminalConfig;
 
-/// Number of panes created so far. First pane splits right (creating the
-/// worker column), subsequent panes split down (stacking inside it).
+/// Number of panes created so far. First pane splits right, subsequent split down.
 static PANE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Terminal adapter for Ghostty on macOS.
 ///
-/// Ghostty does not expose an external IPC for split management.
-/// We use `osascript` to send the keybinding (Cmd+D / Cmd+Shift+D)
-/// to the frontmost Ghostty window, then type the command into the
-/// newly focused pane.
+/// Uses `osascript` to send keybindings to the Ghostty process.
+/// Keybindings are configurable via `orca.toml [terminal]`.
 ///
-/// Layout strategy (similar to tmux):
+/// Layout:
 /// ```text
 /// ┌──────────┬──────────┐
 /// │          │ Worker 1 │
@@ -27,9 +25,21 @@ static PANE_COUNT: AtomicU32 = AtomicU32::new(0);
 /// │          │ Worker 3 │
 /// └──────────┴──────────┘
 /// ```
-/// - First worker: split right (Cmd+D) — creates the worker column
-/// - Subsequent workers: split down (Cmd+Shift+D) — stack in the column
-pub struct GhosttyTerminal;
+pub struct GhosttyTerminal {
+    split_right_key: u8,
+    split_down_key: u8,
+    split_down_shift: bool,
+}
+
+impl GhosttyTerminal {
+    pub fn new(config: &TerminalConfig) -> Self {
+        Self {
+            split_right_key: config.split_right_key,
+            split_down_key: config.split_down_key,
+            split_down_shift: config.split_down_shift,
+        }
+    }
+}
 
 #[async_trait]
 impl Terminal for GhosttyTerminal {
@@ -39,31 +49,28 @@ impl Terminal for GhosttyTerminal {
 
         tracing::info!(pane_id = %pane_id, label = %label, pane_num = count, "creating ghostty split pane");
 
+        // First worker: split right. Subsequent: split down in worker column.
         if count == 0 {
-            // First worker: split right (Cmd+D) to create worker column
-            send_keystroke("d", false).await?;
+            send_keystroke(self.split_right_key, false).await?;
         } else {
-            // Subsequent workers: split down (Cmd+Shift+D) within worker column
-            send_keystroke("d", true).await?;
+            send_keystroke(self.split_down_key, self.split_down_shift).await?;
         }
 
-        // Wait for the split to initialize and receive focus
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Wait for split to initialize
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Type the command into the new pane
         send_text(cmd).await?;
 
-        // Press Enter to execute
-        send_keystroke("return", false).await?;
-
-        // Wait a moment, then focus back to the original (CC) pane
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Press Enter
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        send_keystroke(36, false).await?; // Return key
 
         Ok(pane_id)
     }
 
     async fn close_pane(&self, pane_id: &str) -> Result<()> {
-        tracing::info!(pane_id = %pane_id, "ghostty: split will close when process exits");
+        tracing::info!(pane_id = %pane_id, "ghostty: split closes when process exits");
         Ok(())
     }
 
@@ -77,9 +84,8 @@ impl Terminal for GhosttyTerminal {
     }
 }
 
-/// Send a keystroke to the frontmost Ghostty window via osascript.
-/// If `with_shift` is true, adds the shift modifier.
-async fn send_keystroke(key: &str, with_shift: bool) -> Result<()> {
+/// Send a keystroke via osascript to the frontmost Ghostty window.
+async fn send_keystroke(key_code: u8, with_shift: bool) -> Result<()> {
     let modifier = if with_shift {
         "command down, shift down"
     } else {
@@ -89,29 +95,38 @@ async fn send_keystroke(key: &str, with_shift: bool) -> Result<()> {
     let script = format!(
         r#"tell application "System Events"
     tell process "Ghostty"
-        key code {key_code} using {{{modifier}}}
+        key code {} using {{{}}}
     end tell
 end tell"#,
-        key_code = key_name_to_code(key),
-        modifier = modifier
+        key_code, modifier
     );
 
-    let status = tokio::process::Command::new("osascript")
+    let output = tokio::process::Command::new("osascript")
         .args(["-e", &script])
         .output()
         .await?;
 
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        tracing::warn!("osascript keystroke failed: {}", stderr);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::error!(
+            "osascript keystroke (key_code={}) failed: {}",
+            key_code,
+            stderr
+        );
+        anyhow::bail!(
+            "Failed to send keystroke to Ghostty. \
+             Make sure 'System Events' has Accessibility permission. \
+             System Settings → Privacy & Security → Accessibility → enable your terminal. \
+             Error: {}",
+            stderr
+        );
     }
 
     Ok(())
 }
 
-/// Type text into the focused pane using osascript keystroke events.
+/// Type text into the focused pane via osascript.
 async fn send_text(text: &str) -> Result<()> {
-    // Escape for AppleScript string
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
 
     let script = format!(
@@ -123,24 +138,16 @@ end tell"#,
         escaped
     );
 
-    let status = tokio::process::Command::new("osascript")
+    let output = tokio::process::Command::new("osascript")
         .args(["-e", &script])
         .output()
         .await?;
 
-    if !status.status.success() {
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        tracing::warn!("osascript text input failed: {}", stderr);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::error!("osascript text input failed: {}", stderr);
+        anyhow::bail!("Failed to type text in Ghostty pane. Error: {}", stderr);
     }
 
     Ok(())
-}
-
-/// Map key names to macOS virtual key codes.
-fn key_name_to_code(key: &str) -> u8 {
-    match key {
-        "d" => 2,
-        "return" => 36,
-        _ => 0,
-    }
 }

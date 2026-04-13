@@ -31,6 +31,12 @@ pub struct TerminalConfig {
     pub provider: String,
     pub layout: String,
     pub auto_open: bool,
+    /// macOS key code for "split right" (default: 2 = 'd')
+    pub split_right_key: u8,
+    /// macOS key code for "split down" (default: 2 = 'd')
+    pub split_down_key: u8,
+    /// Use shift modifier for split down (default: true)
+    pub split_down_shift: bool,
 }
 
 /// Container for per-worker-type configurations.
@@ -96,6 +102,9 @@ impl Default for TerminalConfig {
             provider: "manual".to_string(),
             layout: "tabs".to_string(),
             auto_open: true,
+            split_right_key: 2, // 'd' key
+            split_down_key: 2,  // 'd' key
+            split_down_shift: true,
         }
     }
 }

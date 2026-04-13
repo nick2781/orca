@@ -26,9 +26,12 @@ pub trait Terminal: Send + Sync {
 }
 
 /// Create a terminal adapter for the given provider name.
-pub fn create_terminal(provider: &str) -> Box<dyn Terminal> {
+pub fn create_terminal(
+    provider: &str,
+    config: &crate::config::TerminalConfig,
+) -> Box<dyn Terminal> {
     match provider {
-        "ghostty" => Box::new(ghostty::GhosttyTerminal),
+        "ghostty" => Box::new(ghostty::GhosttyTerminal::new(config)),
         "iterm2" => Box::new(iterm::ItermTerminal),
         _ => Box::new(manual::ManualTerminal),
     }
