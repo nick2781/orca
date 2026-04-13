@@ -9,10 +9,11 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{error, info, warn};
 
 use crate::config::Config;
+use crate::daemon::escalation_router::EscalationRouter;
 use crate::daemon::scheduler::Scheduler;
 use crate::daemon::state::StateStore;
 use crate::escalation::{
-    EscalationCategory, EscalationContext, EscalationOption, EscalationRequest,
+    EscalationCategory, EscalationContext, EscalationOption, EscalationRequest, EscalationRoute,
 };
 use crate::isolation::{IsolationDecision, IsolationManager};
 use crate::terminal::Terminal;
@@ -274,6 +275,7 @@ impl TaskExecutor {
         let monitor_worker = Arc::clone(&self.worker);
         let task_id_owned = task_id.to_string();
         let worker_id_owned = worker_id.clone();
+        let escalation_config = self.config.escalation.clone();
 
         tokio::spawn(async move {
             monitor_worker_output(
@@ -282,6 +284,7 @@ impl TaskExecutor {
                 worker_id_owned,
                 task_id_owned,
                 stdout,
+                escalation_config,
             )
             .await;
         });
@@ -293,14 +296,18 @@ impl TaskExecutor {
 /// Monitor a worker's stdout in a background tokio task.
 ///
 /// Reads lines from stdout, parses them with `parse_worker_line()`,
-/// and updates task state based on structured markers.
+/// and updates task state based on structured markers. Escalations
+/// are routed through the `EscalationRouter` so auto-approve
+/// categories are resolved immediately without blocking the task.
 async fn monitor_worker_output(
     state: Arc<Mutex<StateStore>>,
     worker: Arc<dyn Worker>,
     worker_id: String,
     task_id: String,
     stdout: Option<tokio::process::ChildStdout>,
+    escalation_config: crate::config::EscalationConfig,
 ) {
+    let router = EscalationRouter::new(escalation_config);
     if let Some(stdout) = stdout {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
@@ -337,12 +344,7 @@ async fn monitor_worker_output(
                         .unwrap_or("Worker escalation")
                         .to_string();
 
-                    let mut store = state.lock().unwrap();
-                    if let Some(task) = store.get_task_mut(&task_id) {
-                        let _ = task.transition_to(TaskState::Blocked);
-                        task.escalation_id = Some(escalation_id.clone());
-                    }
-                    store.add_escalation(EscalationRequest {
+                    let escalation = EscalationRequest {
                         id: escalation_id,
                         task_id: task_id.clone(),
                         worker_id: worker_id.clone(),
@@ -356,16 +358,71 @@ async fn monitor_worker_output(
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string()),
                         },
-                    });
-                    if let Some(w) = store.get_worker_mut(&worker_id) {
-                        w.status = WorkerStatus::Idle;
+                    };
+
+                    let route = router.route(&escalation);
+                    match route {
+                        EscalationRoute::AutoApprove => {
+                            if let Some(decision) = router.auto_resolve(&escalation) {
+                                info!(
+                                    worker_id,
+                                    task_id,
+                                    decision = %decision.decision,
+                                    "escalation auto-approved"
+                                );
+                                let store = state.lock().unwrap();
+                                let _ = store.log_event(
+                                    "escalation_auto_resolved",
+                                    json!({
+                                        "escalation_id": escalation.id,
+                                        "task_id": task_id,
+                                        "worker_id": worker_id,
+                                        "decision": decision.decision,
+                                    }),
+                                );
+                                // Task stays Running -- no block needed.
+                                continue;
+                            }
+                            // No auto-resolution possible; fall through to store it.
+                            let mut store = state.lock().unwrap();
+                            if let Some(task) = store.get_task_mut(&task_id) {
+                                let _ = task.transition_to(TaskState::Blocked);
+                                task.escalation_id = Some(escalation.id.clone());
+                            }
+                            store.add_escalation(escalation);
+                            if let Some(w) = store.get_worker_mut(&worker_id) {
+                                w.status = WorkerStatus::Idle;
+                            }
+                            let _ = store.save();
+                            let _ = store.log_event(
+                                "task_escalated",
+                                json!({"task_id": task_id, "worker_id": worker_id, "route": "auto_approve"}),
+                            );
+                            break;
+                        }
+                        EscalationRoute::CcFirst | EscalationRoute::AlwaysUser => {
+                            let route_str = match route {
+                                EscalationRoute::CcFirst => "cc_first",
+                                EscalationRoute::AlwaysUser => "always_user",
+                                _ => unreachable!(),
+                            };
+                            let mut store = state.lock().unwrap();
+                            if let Some(task) = store.get_task_mut(&task_id) {
+                                let _ = task.transition_to(TaskState::Blocked);
+                                task.escalation_id = Some(escalation.id.clone());
+                            }
+                            store.add_escalation(escalation);
+                            if let Some(w) = store.get_worker_mut(&worker_id) {
+                                w.status = WorkerStatus::Idle;
+                            }
+                            let _ = store.save();
+                            let _ = store.log_event(
+                                "task_escalated",
+                                json!({"task_id": task_id, "worker_id": worker_id, "route": route_str}),
+                            );
+                            break;
+                        }
                     }
-                    let _ = store.save();
-                    let _ = store.log_event(
-                        "task_escalated",
-                        json!({"task_id": task_id, "worker_id": worker_id}),
-                    );
-                    break;
                 }
                 WorkerMessage::Blocked(data) => {
                     info!(worker_id, task_id, "worker blocked");

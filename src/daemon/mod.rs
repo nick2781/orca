@@ -1,3 +1,4 @@
+pub mod escalation_router;
 pub mod executor;
 pub mod scheduler;
 pub mod server;
@@ -11,6 +12,7 @@ use serde_json::{json, Value};
 use tracing::info;
 
 use crate::config::Config;
+use crate::daemon::escalation_router::EscalationRouter;
 use crate::daemon::executor::TaskExecutor;
 use crate::daemon::scheduler::Scheduler;
 use crate::daemon::server::{IpcServer, RpcHandler};
@@ -213,7 +215,7 @@ fn handle_request(
     req: RpcRequest,
     state: Arc<Mutex<StateStore>>,
     scheduler: Arc<Mutex<Option<Scheduler>>>,
-    _config: Config,
+    config: Config,
     _worker: Arc<dyn Worker>,
     _isolation: Arc<IsolationManager>,
     _project_dir: PathBuf,
@@ -222,7 +224,7 @@ fn handle_request(
     match req.method.as_str() {
         "ping" => RpcResponse::success(id, json!({"pong": true})),
         "orca_plan" => handle_plan(id, req.params, &state, &scheduler),
-        "orca_status" => handle_status(id, req.params, &state),
+        "orca_status" => handle_status(id, req.params, &state, &config),
         "orca_task_detail" => handle_task_detail(id, req.params, &state),
         "orca_decide" => handle_decide(id, req.params, &state),
         "orca_review" => handle_review(id, req.params, &state),
@@ -319,8 +321,14 @@ fn handle_plan(
 }
 
 /// Return tasks (optionally filtered by state) and pending escalations.
-fn handle_status(id: Value, params: Value, state: &Arc<Mutex<StateStore>>) -> RpcResponse {
+fn handle_status(
+    id: Value,
+    params: Value,
+    state: &Arc<Mutex<StateStore>>,
+    config: &Config,
+) -> RpcResponse {
     let store = state.lock().unwrap();
+    let router = EscalationRouter::new(config.escalation.clone());
 
     let state_filter: Option<String> = params
         .get("state")
@@ -352,11 +360,13 @@ fn handle_status(id: Value, params: Value, state: &Arc<Mutex<StateStore>>) -> Rp
         .pending_escalations()
         .into_iter()
         .map(|e| {
+            let route = router.route(e);
             json!({
                 "id": e.id,
                 "task_id": e.task_id,
                 "category": e.category,
                 "summary": e.summary,
+                "route": route,
             })
         })
         .collect();

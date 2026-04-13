@@ -67,6 +67,20 @@ pub enum DecidedBy {
 }
 
 impl EscalationCategory {
+    /// Return the snake_case string representation of this category,
+    /// matching the format used in configuration files.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EscalationCategory::ImplementationChoice => "implementation_choice",
+            EscalationCategory::TestFailure => "test_failure",
+            EscalationCategory::Timeout => "timeout",
+            EscalationCategory::ArchitectureChange => "architecture_change",
+            EscalationCategory::DestructiveOperation => "destructive_operation",
+            EscalationCategory::ScopeExceeded => "scope_exceeded",
+            EscalationCategory::Conflict => "conflict",
+        }
+    }
+
     /// Return the default routing for this escalation category.
     pub fn default_route(&self) -> EscalationRoute {
         match self {
