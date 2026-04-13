@@ -1,5 +1,7 @@
 # Orca
 
+> **WARNING: 这是一个实验性项目，正在积极开发中。尚不能用于日常工作。** 核心功能如任务执行循环、Worker 输出监控等尚未实现。使用需自担风险。
+
 多 Agent 编排器：Claude Code 做大脑，Codex 做执行。
 
 [English](README.md) | 中文
