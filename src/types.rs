@@ -23,9 +23,10 @@ pub struct TaskContext {
 }
 
 /// How a task should be isolated during execution.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IsolationMode {
+    #[default]
     Auto,
     Worktree,
     Serial,
@@ -156,11 +157,6 @@ impl Task {
     }
 }
 
-impl Default for IsolationMode {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
 
 
 
