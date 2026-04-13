@@ -259,9 +259,14 @@ impl TaskExecutor {
         info!(task_id, worker_id, work_dir = %work_dir_str, "launching worker in terminal pane");
 
         // Write AGENTS.md to working directory so Codex has full task context.
+        // Then git-add it so it doesn't show up as untracked in completion detection.
         let agents_content = generate_agents_md(&task_spec);
         let agents_path = Path::new(&work_dir_str).join("AGENTS.md");
         std::fs::write(&agents_path, &agents_content)?;
+        let _ = std::process::Command::new("git")
+            .args(["add", "AGENTS.md"])
+            .current_dir(&work_dir_str)
+            .output();
 
         // Record initial HEAD for completion detection.
         let initial_head = get_git_head(&work_dir_str).unwrap_or_default();
@@ -343,12 +348,19 @@ fn get_git_diff_stat(work_dir: &Path) -> String {
 }
 
 /// Get `git status --porcelain` output for a working directory.
+/// Excludes AGENTS.md (written by orca, not by the worker).
 fn get_git_status(work_dir: &Path) -> String {
     std::process::Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(work_dir)
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|line| !line.ends_with("AGENTS.md"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
         .unwrap_or_default()
 }
 
