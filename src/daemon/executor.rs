@@ -1,25 +1,23 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-use crate::config::Config;
-use crate::daemon::escalation_router::EscalationRouter;
+use crate::config::{Config, EscalationConfig};
 use crate::daemon::scheduler::Scheduler;
 use crate::daemon::state::StateStore;
 use crate::escalation::{
-    EscalationCategory, EscalationContext, EscalationOption, EscalationRequest, EscalationRoute,
+    EscalationCategory, EscalationContext, EscalationOption, EscalationRequest,
 };
 use crate::isolation::{IsolationDecision, IsolationManager};
 use crate::terminal::Terminal;
-use crate::types::{TaskState, WorkerInfo, WorkerStatus};
-use crate::worker::codex::parse_worker_line;
-use crate::worker::{Worker, WorkerMessage};
+use crate::types::{TaskOutput, TaskState, WorkerInfo, WorkerStatus};
+use crate::worker::codex::generate_agents_md;
+use crate::worker::Worker;
 
 /// Atomic counter for generating unique worker IDs.
 static WORKER_COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -126,7 +124,11 @@ impl TaskExecutor {
         Ok(())
     }
 
-    /// Start a single task: decide isolation, spawn worker, open pane, dispatch.
+    /// Start a single task: decide isolation, write context, launch in terminal pane.
+    ///
+    /// Instead of spawning a hidden subprocess and piping stdout, this launches
+    /// Codex directly in a user-visible terminal pane. Completion is detected
+    /// by a background monitor that polls git state for new commits.
     async fn start_task(&self, task_id: &str) -> Result<()> {
         // Decide isolation strategy.
         let (decision, task_spec) = {
@@ -254,41 +256,57 @@ impl TaskExecutor {
             );
         }
 
-        info!(task_id, worker_id, work_dir = %work_dir_str, "spawning worker");
+        info!(task_id, worker_id, work_dir = %work_dir_str, "launching worker in terminal pane");
 
-        // Spawn the worker process.
-        self.worker.spawn(&worker_id, &work_dir_str).await?;
+        // Write AGENTS.md to working directory so Codex has full task context.
+        let agents_content = generate_agents_md(&task_spec);
+        let agents_path = Path::new(&work_dir_str).join("AGENTS.md");
+        std::fs::write(&agents_path, &agents_content)?;
 
-        // Open a terminal pane for visibility.
+        // Record initial HEAD for completion detection.
+        let initial_head = get_git_head(&work_dir_str).unwrap_or_default();
+
+        // Build prompt and shell command to run Codex in the terminal pane.
+        let short_prompt = format!(
+            "Implement: {}. {}. Read AGENTS.md for full task context and rules.",
+            task_spec.title, task_spec.description
+        );
+        // Escape single quotes for shell safety.
+        let escaped_prompt = short_prompt.replace('\'', "'\\''");
+        let worker_cmd = self.worker.worker_type();
+        let cmd = format!(
+            "cd '{}' && {} --full-auto '{}'",
+            work_dir_str, worker_cmd, escaped_prompt
+        );
+
+        // Launch Codex in a user-visible terminal pane.
         let pane_label = format!("{} ({})", task_id, worker_id);
-        match self
-            .terminal
-            .create_pane(&format!("tail -f /dev/null # {worker_id}"), &pane_label)
-            .await
-        {
-            Ok(pane_id) => info!(worker_id, pane_id, "terminal pane opened"),
-            Err(e) => warn!(worker_id, "failed to open terminal pane: {e:#}"),
+        match self.terminal.create_pane(&cmd, &pane_label).await {
+            Ok(pane_id) => info!(worker_id, pane_id, "worker launched in terminal pane"),
+            Err(e) => {
+                error!(worker_id, "failed to open terminal pane: {e:#}");
+                // Print command for manual execution as fallback.
+                eprintln!("Run manually: {}", cmd);
+            }
         }
 
-        // Dispatch the task to the worker.
-        self.worker.dispatch(&worker_id, &task_spec).await?;
-
-        // Take stdout and spawn a background monitor task.
-        let stdout = self.worker.take_stdout(&worker_id).await?;
+        // Spawn background monitor that polls git state for completion.
         let monitor_state = Arc::clone(&self.state);
-        let monitor_worker = Arc::clone(&self.worker);
         let task_id_owned = task_id.to_string();
         let worker_id_owned = worker_id.clone();
-        let escalation_config = self.config.escalation.clone();
+        let work_dir_path = PathBuf::from(&work_dir_str);
+        let esc_config = self.config.escalation.clone();
+        let timeout = self.config.codex_worker_config().timeout_secs;
 
         tokio::spawn(async move {
-            monitor_worker_output(
+            monitor_task_completion(
                 monitor_state,
-                monitor_worker,
-                worker_id_owned,
                 task_id_owned,
-                stdout,
-                escalation_config,
+                worker_id_owned,
+                work_dir_path,
+                initial_head,
+                timeout,
+                esc_config,
             )
             .await;
         });
@@ -297,235 +315,190 @@ impl TaskExecutor {
     }
 }
 
-/// Monitor a worker's stdout in a background tokio task.
+// -- Git state helpers for completion detection --
+
+/// Get the current HEAD commit hash for a git working directory.
+fn get_git_head(work_dir: &str) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(work_dir)
+        .output()?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Get `git diff --stat` output for a working directory.
+fn get_git_diff_stat(work_dir: &Path) -> String {
+    std::process::Command::new("git")
+        .args(["diff", "--stat"])
+        .current_dir(work_dir)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default()
+}
+
+/// Get `git status --porcelain` output for a working directory.
+fn get_git_status(work_dir: &Path) -> String {
+    std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(work_dir)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default()
+}
+
+/// Check whether a codex process is still running in the given directory.
 ///
-/// Reads lines from stdout, parses them with `parse_worker_line()`,
-/// and updates task state based on structured markers. Escalations
-/// are routed through the `EscalationRouter` so auto-approve
-/// categories are resolved immediately without blocking the task.
-async fn monitor_worker_output(
+/// Uses `pgrep -f` to search for a codex process whose command line
+/// references the working directory.
+fn is_codex_running(work_dir: &Path) -> bool {
+    let pattern = format!("codex.*{}", work_dir.display());
+    std::process::Command::new("pgrep")
+        .args(["-f", &pattern])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Monitor task completion by polling git state instead of reading stdout.
+///
+/// Checks periodically whether the codex process has exited and whether
+/// it produced git changes (new commits or uncommitted work). Transitions
+/// the task to Done/Review on success, or Blocked on failure/timeout.
+async fn monitor_task_completion(
     state: Arc<Mutex<StateStore>>,
-    worker: Arc<dyn Worker>,
-    worker_id: String,
     task_id: String,
-    stdout: Option<tokio::process::ChildStdout>,
-    escalation_config: crate::config::EscalationConfig,
+    worker_id: String,
+    work_dir: PathBuf,
+    initial_head: String,
+    timeout_secs: u64,
+    _esc_config: EscalationConfig,
 ) {
-    let router = EscalationRouter::new(escalation_config);
-    if let Some(stdout) = stdout {
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
+    let start = std::time::Instant::now();
 
-        while let Ok(Some(line)) = lines.next_line().await {
-            let msg = parse_worker_line(&line);
-            match msg {
-                WorkerMessage::Done(output) => {
-                    info!(worker_id, task_id, "worker reported DONE");
-                    let mut store = state.lock().unwrap();
-                    if let Some(task) = store.get_task_mut(&task_id) {
-                        task.output = Some(output);
-                        let _ = task.transition_to(TaskState::Done);
-                        let _ = task.transition_to(TaskState::Review);
-                    }
-                    if let Some(w) = store.get_worker_mut(&worker_id) {
-                        w.status = WorkerStatus::Dead;
-                        w.current_task_id = None;
-                    }
-                    let _ = store.save();
-                    let _ = store.log_event(
-                        "task_done",
-                        json!({"task_id": task_id, "worker_id": worker_id}),
-                    );
-                    break;
-                }
-                WorkerMessage::Escalate(data) => {
-                    info!(worker_id, task_id, "worker escalating");
-                    let escalation_id = format!("esc-{}-{}", task_id, uuid::Uuid::new_v4());
-                    let summary = data
-                        .get("summary")
-                        .or_else(|| data.get("reason"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Worker escalation")
-                        .to_string();
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
 
-                    let escalation = EscalationRequest {
-                        id: escalation_id,
-                        task_id: task_id.clone(),
-                        worker_id: worker_id.clone(),
-                        category: EscalationCategory::ImplementationChoice,
-                        summary,
-                        options: vec![],
-                        context: EscalationContext {
-                            relevant_files: vec![],
-                            worker_recommendation: data
-                                .get("recommendation")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string()),
-                        },
-                    };
+        let work_dir_str = work_dir.to_str().unwrap_or(".");
 
-                    let route = router.route(&escalation);
-                    match route {
-                        EscalationRoute::AutoApprove => {
-                            if let Some(decision) = router.auto_resolve(&escalation) {
-                                info!(
-                                    worker_id,
-                                    task_id,
-                                    decision = %decision.decision,
-                                    "escalation auto-approved"
-                                );
-                                let store = state.lock().unwrap();
-                                let _ = store.log_event(
-                                    "escalation_auto_resolved",
-                                    json!({
-                                        "escalation_id": escalation.id,
-                                        "task_id": task_id,
-                                        "worker_id": worker_id,
-                                        "decision": decision.decision,
-                                    }),
-                                );
-                                // Task stays Running -- no block needed.
-                                continue;
-                            }
-                            // No auto-resolution possible; fall through to store it.
-                            let mut store = state.lock().unwrap();
-                            if let Some(task) = store.get_task_mut(&task_id) {
-                                let _ = task.transition_to(TaskState::Blocked);
-                                task.escalation_id = Some(escalation.id.clone());
-                            }
-                            store.add_escalation(escalation);
-                            if let Some(w) = store.get_worker_mut(&worker_id) {
-                                w.status = WorkerStatus::Idle;
-                            }
-                            let _ = store.save();
-                            let _ = store.log_event(
-                                "task_escalated",
-                                json!({"task_id": task_id, "worker_id": worker_id, "route": "auto_approve"}),
-                            );
-                            break;
-                        }
-                        EscalationRoute::CcFirst | EscalationRoute::AlwaysUser => {
-                            let route_str = match route {
-                                EscalationRoute::CcFirst => "cc_first",
-                                EscalationRoute::AlwaysUser => "always_user",
-                                _ => unreachable!(),
-                            };
-                            let mut store = state.lock().unwrap();
-                            if let Some(task) = store.get_task_mut(&task_id) {
-                                let _ = task.transition_to(TaskState::Blocked);
-                                task.escalation_id = Some(escalation.id.clone());
-                            }
-                            store.add_escalation(escalation);
-                            if let Some(w) = store.get_worker_mut(&worker_id) {
-                                w.status = WorkerStatus::Idle;
-                            }
-                            let _ = store.save();
-                            let _ = store.log_event(
-                                "task_escalated",
-                                json!({"task_id": task_id, "worker_id": worker_id, "route": route_str}),
-                            );
-                            break;
-                        }
-                    }
-                }
-                WorkerMessage::Blocked(data) => {
-                    info!(worker_id, task_id, "worker blocked");
-                    let reason = data
-                        .get("blocker")
-                        .or_else(|| data.get("reason"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Worker blocked")
-                        .to_string();
-                    let escalation_id = format!("esc-{}-{}", task_id, uuid::Uuid::new_v4());
+        // Check if HEAD has moved (codex made commits).
+        let current_head = get_git_head(work_dir_str).unwrap_or_default();
+        let has_new_commits = !current_head.is_empty() && current_head != initial_head;
+        let has_uncommitted = !get_git_status(&work_dir).trim().is_empty();
 
-                    let mut store = state.lock().unwrap();
-                    if let Some(task) = store.get_task_mut(&task_id) {
-                        let _ = task.transition_to(TaskState::Blocked);
-                        task.escalation_id = Some(escalation_id.clone());
-                    }
-                    store.add_escalation(EscalationRequest {
-                        id: escalation_id,
-                        task_id: task_id.clone(),
-                        worker_id: worker_id.clone(),
-                        category: EscalationCategory::Timeout,
-                        summary: reason,
-                        options: vec![],
-                        context: EscalationContext {
-                            relevant_files: vec![],
-                            worker_recommendation: None,
-                        },
-                    });
-                    if let Some(w) = store.get_worker_mut(&worker_id) {
-                        w.status = WorkerStatus::Idle;
-                    }
-                    let _ = store.save();
-                    let _ = store.log_event(
-                        "task_blocked",
-                        json!({"task_id": task_id, "worker_id": worker_id}),
-                    );
-                    break;
-                }
-                WorkerMessage::Progress(text) => {
-                    info!(worker_id, task_id, progress = %text, "worker progress");
-                    let store = state.lock().unwrap();
-                    let _ = store.log_event(
-                        "task_progress",
-                        json!({"task_id": task_id, "worker_id": worker_id, "message": text}),
-                    );
-                }
-                WorkerMessage::Output(text) => {
-                    // Pass-through: log at trace level to avoid noise.
-                    tracing::trace!(worker_id, task_id, output = %text, "worker output");
-                }
-            }
-        }
-    }
+        // Check if codex process is still alive.
+        let codex_running = is_codex_running(&work_dir);
 
-    // After stdout closes, check if the worker exited without reporting DONE.
-    // Poll health to confirm death, then mark the task as blocked if still running.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    match worker.health_check(&worker_id).await {
-        Ok(WorkerStatus::Dead) | Err(_) => {
+        if !codex_running {
+            // Codex exited -- determine outcome based on git state.
             let mut store = state.lock().unwrap();
-            if let Some(task) = store.get_task_mut(&task_id) {
-                if task.state == TaskState::Running {
-                    warn!(
-                        worker_id,
-                        task_id, "worker exited without DONE marker, marking task blocked"
-                    );
-                    let escalation_id = format!("esc-exit-{}", task_id);
+
+            if has_new_commits || has_uncommitted {
+                // Codex produced changes -> task done -> move to review.
+                let diff = get_git_diff_stat(&work_dir);
+                info!(task_id, worker_id, "codex completed with changes");
+
+                if let Some(task) = store.get_task_mut(&task_id) {
+                    task.output = Some(TaskOutput {
+                        files_changed: vec![],
+                        tests_passed: false,
+                        diff_summary: diff,
+                        stdout: String::new(),
+                    });
+                    let _ = task.transition_to(TaskState::Done);
+                    let _ = task.transition_to(TaskState::Review);
+                }
+                if let Some(w) = store.get_worker_mut(&worker_id) {
+                    w.status = WorkerStatus::Dead;
+                    w.current_task_id = None;
+                }
+                let _ = store.save();
+                let _ = store.log_event(
+                    "task_completed",
+                    json!({
+                        "task_id": task_id,
+                        "worker_id": worker_id,
+                        "has_commits": has_new_commits,
+                        "has_uncommitted": has_uncommitted,
+                    }),
+                );
+            } else {
+                // No changes -> codex failed to produce anything.
+                info!(task_id, worker_id, "codex exited without changes");
+                let escalation_id = format!("esc-exit-{}", task_id);
+
+                if let Some(task) = store.get_task_mut(&task_id) {
                     let _ = task.transition_to(TaskState::Blocked);
                     task.escalation_id = Some(escalation_id.clone());
-
-                    store.add_escalation(EscalationRequest {
-                        id: escalation_id,
-                        task_id: task_id.clone(),
-                        worker_id: worker_id.clone(),
-                        category: EscalationCategory::Timeout,
-                        summary: "Worker exited without completing the task".to_string(),
-                        options: vec![],
-                        context: EscalationContext {
-                            relevant_files: vec![],
-                            worker_recommendation: None,
-                        },
-                    });
                 }
+                if let Some(w) = store.get_worker_mut(&worker_id) {
+                    w.status = WorkerStatus::Dead;
+                    w.current_task_id = None;
+                }
+                store.add_escalation(EscalationRequest {
+                    id: escalation_id,
+                    task_id: task_id.clone(),
+                    worker_id: worker_id.clone(),
+                    category: EscalationCategory::Timeout,
+                    summary: "Codex exited without producing any changes".to_string(),
+                    options: vec![],
+                    context: EscalationContext {
+                        relevant_files: vec![],
+                        worker_recommendation: None,
+                    },
+                });
+                let _ = store.save();
+                let _ = store.log_event(
+                    "task_blocked",
+                    json!({
+                        "task_id": task_id,
+                        "worker_id": worker_id,
+                        "reason": "codex_exited_no_changes",
+                    }),
+                );
+            }
+            break;
+        }
+
+        // Check timeout.
+        if start.elapsed().as_secs() > timeout_secs {
+            info!(task_id, worker_id, "task timed out after {}s", timeout_secs);
+            let escalation_id = format!("esc-timeout-{}", task_id);
+
+            let mut store = state.lock().unwrap();
+            if let Some(task) = store.get_task_mut(&task_id) {
+                let _ = task.transition_to(TaskState::Blocked);
+                task.escalation_id = Some(escalation_id.clone());
             }
             if let Some(w) = store.get_worker_mut(&worker_id) {
                 w.status = WorkerStatus::Dead;
                 w.current_task_id = None;
             }
+            store.add_escalation(EscalationRequest {
+                id: escalation_id,
+                task_id: task_id.clone(),
+                worker_id: worker_id.clone(),
+                category: EscalationCategory::Timeout,
+                summary: format!("Task exceeded timeout of {}s", timeout_secs),
+                options: vec![],
+                context: EscalationContext {
+                    relevant_files: vec![],
+                    worker_recommendation: None,
+                },
+            });
             let _ = store.save();
-        }
-        Ok(_) => {
-            // Worker still alive -- unusual after stdout closes, but not fatal.
-            warn!(worker_id, "worker stdout closed but process still alive");
+            let _ = store.log_event(
+                "task_timeout",
+                json!({
+                    "task_id": task_id,
+                    "worker_id": worker_id,
+                    "timeout_secs": timeout_secs,
+                }),
+            );
+            break;
         }
     }
-
-    // Clean up the worker process.
-    let _ = worker.cleanup(&worker_id).await;
 }
 
 #[cfg(test)]
@@ -550,36 +523,26 @@ mod tests {
         }
     }
 
-    /// A mock worker that tracks spawn/dispatch calls without real processes.
-    struct MockWorker {
-        spawned: Arc<tokio::sync::Mutex<Vec<(String, String)>>>,
-        dispatched: Arc<tokio::sync::Mutex<Vec<(String, String)>>>,
-    }
+    /// A mock worker used by scheduling tests.
+    ///
+    /// The executor no longer calls spawn/dispatch/take_stdout on the worker
+    /// (those methods belong to the old piped-subprocess model). This mock
+    /// exists to satisfy the `Worker` trait bound required by `TaskExecutor`.
+    struct MockWorker;
 
     impl MockWorker {
         fn new() -> Self {
-            Self {
-                spawned: Arc::new(tokio::sync::Mutex::new(vec![])),
-                dispatched: Arc::new(tokio::sync::Mutex::new(vec![])),
-            }
+            Self
         }
     }
 
     #[async_trait::async_trait]
     impl Worker for MockWorker {
-        async fn spawn(&self, worker_id: &str, work_dir: &str) -> Result<()> {
-            self.spawned
-                .lock()
-                .await
-                .push((worker_id.to_string(), work_dir.to_string()));
+        async fn spawn(&self, _worker_id: &str, _work_dir: &str) -> Result<()> {
             Ok(())
         }
 
-        async fn dispatch(&self, worker_id: &str, task: &TaskSpec) -> Result<()> {
-            self.dispatched
-                .lock()
-                .await
-                .push((worker_id.to_string(), task.id.clone()));
+        async fn dispatch(&self, _worker_id: &str, _task: &TaskSpec) -> Result<()> {
             Ok(())
         }
 
@@ -599,7 +562,6 @@ mod tests {
             &self,
             _worker_id: &str,
         ) -> Result<Option<tokio::process::ChildStdout>> {
-            // No real stdout in mock -- return None so monitor exits immediately.
             Ok(None)
         }
 
@@ -699,8 +661,7 @@ mod tests {
         let sched = Scheduler::new(&[spec], &[]).unwrap();
         let scheduler = Arc::new(Mutex::new(Some(sched)));
 
-        let mock_worker = Arc::new(MockWorker::new());
-        let worker: Arc<dyn Worker> = mock_worker.clone();
+        let worker: Arc<dyn Worker> = Arc::new(MockWorker::new());
 
         let executor = make_executor(state.clone(), scheduler, worker, dir.path());
 
@@ -709,26 +670,38 @@ mod tests {
         // Give the background monitor a moment to run.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // The task should have been dispatched.
-        let dispatched = mock_worker.dispatched.lock().await;
-        assert_eq!(dispatched.len(), 1);
-        assert_eq!(dispatched[0].1, "t1");
-
-        // The task should no longer be Pending.
+        // The task should have transitioned out of Pending.
+        // With the terminal-pane model, start_task writes AGENTS.md, opens a
+        // pane, and spawns a git-polling monitor. The task transitions through
+        // Assigned -> Running during start_task.
         let store = state.lock().unwrap();
         let task = store.get_task("t1").unwrap();
-        // After monitor sees Dead worker without DONE, task goes to Blocked.
-        // But during start_task it transitions through Assigned -> Running.
         assert!(
             task.state != TaskState::Pending,
             "task should not still be pending, got {:?}",
             task.state
+        );
+        // Verify a worker was registered.
+        assert!(
+            !store.state().workers.is_empty(),
+            "a worker should have been registered"
         );
     }
 
     #[tokio::test]
     async fn test_tick_respects_max_workers() {
         let dir = tempfile::tempdir().unwrap();
+
+        // Initialize a git repo.
+        let _git_init = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output();
+        let _git_commit = std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(dir.path())
+            .output();
+
         let mut store = StateStore::new(dir.path()).unwrap();
 
         // Create two tasks.
@@ -761,8 +734,7 @@ mod tests {
         let sched = Scheduler::new(&[spec1, spec2], &[]).unwrap();
         let scheduler = Arc::new(Mutex::new(Some(sched)));
 
-        let mock_worker = Arc::new(MockWorker::new());
-        let worker: Arc<dyn Worker> = mock_worker.clone();
+        let worker: Arc<dyn Worker> = Arc::new(MockWorker::new());
 
         // Set max_workers to 2 (1 already busy, so only 1 slot available).
         let isolation = Arc::new(make_isolation(dir.path()));
@@ -783,12 +755,18 @@ mod tests {
         executor.tick().await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // Only one task should have been dispatched.
-        let dispatched = mock_worker.dispatched.lock().await;
+        // Only one task should have been started (1 available slot).
+        // Count tasks that moved past Pending.
+        let store = state.lock().unwrap();
+        let started_count = store
+            .state()
+            .tasks
+            .values()
+            .filter(|t| t.state != TaskState::Pending)
+            .count();
         assert_eq!(
-            dispatched.len(),
-            1,
-            "should only dispatch 1 task with 1 available slot"
+            started_count, 1,
+            "should only start 1 task with 1 available slot"
         );
     }
 
@@ -811,8 +789,7 @@ mod tests {
         let sched = Scheduler::new(&[spec], &[]).unwrap();
         let scheduler = Arc::new(Mutex::new(Some(sched)));
 
-        let mock_worker = Arc::new(MockWorker::new());
-        let worker: Arc<dyn Worker> = mock_worker.clone();
+        let worker: Arc<dyn Worker> = Arc::new(MockWorker::new());
 
         let executor = make_executor(state.clone(), scheduler, worker, dir.path());
 

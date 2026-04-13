@@ -15,35 +15,26 @@ use orca::worker::Worker;
 
 // -- Mock implementations ---------------------------------------------------
 
-struct MockWorker {
-    spawned: Arc<tokio::sync::Mutex<Vec<(String, String)>>>,
-    dispatched: Arc<tokio::sync::Mutex<Vec<(String, String)>>>,
-}
+/// A mock worker that satisfies the Worker trait.
+///
+/// The executor no longer calls spawn/dispatch/take_stdout directly (those
+/// belonged to the old piped-subprocess model). The mock exists to satisfy
+/// the trait bound required by TaskExecutor.
+struct MockWorker;
 
 impl MockWorker {
     fn new() -> Self {
-        Self {
-            spawned: Arc::new(tokio::sync::Mutex::new(vec![])),
-            dispatched: Arc::new(tokio::sync::Mutex::new(vec![])),
-        }
+        Self
     }
 }
 
 #[async_trait]
 impl Worker for MockWorker {
-    async fn spawn(&self, worker_id: &str, work_dir: &str) -> Result<()> {
-        self.spawned
-            .lock()
-            .await
-            .push((worker_id.to_string(), work_dir.to_string()));
+    async fn spawn(&self, _worker_id: &str, _work_dir: &str) -> Result<()> {
         Ok(())
     }
 
-    async fn dispatch(&self, worker_id: &str, task: &TaskSpec) -> Result<()> {
-        self.dispatched
-            .lock()
-            .await
-            .push((worker_id.to_string(), task.id.clone()));
+    async fn dispatch(&self, _worker_id: &str, _task: &TaskSpec) -> Result<()> {
         Ok(())
     }
 
@@ -104,6 +95,18 @@ fn make_spec(id: &str) -> TaskSpec {
     }
 }
 
+/// Initialize a minimal git repo so AGENTS.md writes and git HEAD checks work.
+fn init_git_repo(dir: &std::path::Path) {
+    let _ = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output();
+    let _ = std::process::Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(dir)
+        .output();
+}
+
 fn make_executor(
     state: Arc<Mutex<StateStore>>,
     scheduler: Arc<Mutex<Option<Scheduler>>>,
@@ -150,6 +153,8 @@ async fn test_no_tick_without_scheduler() {
 #[tokio::test]
 async fn test_tick_assigns_pending_tasks() {
     let dir = tempfile::tempdir().unwrap();
+    init_git_repo(dir.path());
+
     let mut store = StateStore::new(dir.path()).unwrap();
 
     let spec = make_spec("t1");
@@ -159,25 +164,16 @@ async fn test_tick_assigns_pending_tasks() {
     let sched = Scheduler::new(&[spec], &[]).unwrap();
     let scheduler = Arc::new(Mutex::new(Some(sched)));
 
-    let mock_worker = Arc::new(MockWorker::new());
-    let worker: Arc<dyn Worker> = mock_worker.clone();
+    let worker: Arc<dyn Worker> = Arc::new(MockWorker::new());
 
     let executor = make_executor(state.clone(), scheduler, worker, dir.path());
 
     executor.tick().await.unwrap();
 
-    // Allow background monitor to complete.
+    // Allow background monitor to start.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Worker should have been spawned and dispatched.
-    let spawned = mock_worker.spawned.lock().await;
-    assert_eq!(spawned.len(), 1, "should have spawned 1 worker");
-
-    let dispatched = mock_worker.dispatched.lock().await;
-    assert_eq!(dispatched.len(), 1, "should have dispatched 1 task");
-    assert_eq!(dispatched[0].1, "t1");
-
-    // The task should no longer be Pending.
+    // The task should have transitioned out of Pending through Assigned -> Running.
     let store = state.lock().unwrap();
     let task = store.get_task("t1").unwrap();
     assert_ne!(
@@ -186,11 +182,19 @@ async fn test_tick_assigns_pending_tasks() {
         "task should have transitioned from Pending"
     );
     assert!(task.worker_id.is_some(), "task should have a worker_id");
+
+    // A worker should have been registered.
+    assert!(
+        !store.state().workers.is_empty(),
+        "a worker should have been registered"
+    );
 }
 
 #[tokio::test]
 async fn test_tick_skips_when_no_pending() {
     let dir = tempfile::tempdir().unwrap();
+    init_git_repo(dir.path());
+
     let mut store = StateStore::new(dir.path()).unwrap();
 
     let spec = make_spec("t1");
@@ -204,25 +208,25 @@ async fn test_tick_skips_when_no_pending() {
     let sched = Scheduler::new(&[spec], &[]).unwrap();
     let scheduler = Arc::new(Mutex::new(Some(sched)));
 
-    let mock_worker = Arc::new(MockWorker::new());
-    let worker: Arc<dyn Worker> = mock_worker.clone();
+    let worker: Arc<dyn Worker> = Arc::new(MockWorker::new());
 
     let executor = make_executor(state.clone(), scheduler, worker, dir.path());
 
     executor.tick().await.unwrap();
 
-    // No new workers should have been spawned.
-    let spawned = mock_worker.spawned.lock().await;
-    assert_eq!(
-        spawned.len(),
-        0,
-        "should not spawn for already-running task"
+    // No new workers should have been registered (task was already running).
+    let store = state.lock().unwrap();
+    assert!(
+        store.state().workers.is_empty(),
+        "should not register workers for already-running tasks"
     );
 }
 
 #[tokio::test]
 async fn test_tick_respects_dependencies() {
     let dir = tempfile::tempdir().unwrap();
+    init_git_repo(dir.path());
+
     let mut store = StateStore::new(dir.path()).unwrap();
 
     let spec1 = make_spec("t1");
@@ -242,21 +246,19 @@ async fn test_tick_respects_dependencies() {
     let sched = Scheduler::new(&[spec1, spec2], &edges).unwrap();
     let scheduler = Arc::new(Mutex::new(Some(sched)));
 
-    let mock_worker = Arc::new(MockWorker::new());
-    let worker: Arc<dyn Worker> = mock_worker.clone();
+    let worker: Arc<dyn Worker> = Arc::new(MockWorker::new());
 
     let executor = make_executor(state.clone(), scheduler, worker, dir.path());
 
     executor.tick().await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Only t1 should be dispatched (t2 depends on t1).
-    let dispatched = mock_worker.dispatched.lock().await;
-    assert_eq!(dispatched.len(), 1);
-    assert_eq!(dispatched[0].1, "t1");
+    // Only t1 should have started (t2 depends on t1).
+    let store = state.lock().unwrap();
+    let t1 = store.get_task("t1").unwrap();
+    assert_ne!(t1.state, TaskState::Pending, "t1 should have started");
 
     // t2 should still be pending.
-    let store = state.lock().unwrap();
     assert_eq!(store.get_task("t2").unwrap().state, TaskState::Pending);
 }
 
@@ -276,18 +278,13 @@ async fn test_ask_cc_creates_escalation() {
     let sched = Scheduler::new(&[spec], &[]).unwrap();
     let scheduler = Arc::new(Mutex::new(Some(sched)));
 
-    let mock_worker = Arc::new(MockWorker::new());
-    let worker: Arc<dyn Worker> = mock_worker.clone();
+    let worker: Arc<dyn Worker> = Arc::new(MockWorker::new());
 
     let executor = make_executor(state.clone(), scheduler, worker, dir.path());
 
     executor.tick().await.unwrap();
 
-    // Worker should NOT have been spawned (we escalated instead).
-    let spawned = mock_worker.spawned.lock().await;
-    assert_eq!(spawned.len(), 0, "should not spawn for AskCc task");
-
-    // Task should be blocked with an escalation.
+    // Task should be blocked with an escalation (no worker spawned).
     let store = state.lock().unwrap();
     let task = store.get_task("t1").unwrap();
     assert_eq!(task.state, TaskState::Blocked);

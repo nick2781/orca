@@ -226,12 +226,8 @@ impl Worker for CodexWorker {
         // Write task-specific AGENTS.md so Codex has full context.
         let agents_path = Path::new(&wp.work_dir).join("AGENTS.md");
         let agents_content = generate_agents_md(task);
-        std::fs::write(&agents_path, &agents_content).with_context(|| {
-            format!(
-                "failed to write AGENTS.md to '{}'",
-                agents_path.display()
-            )
-        })?;
+        std::fs::write(&agents_path, &agents_content)
+            .with_context(|| format!("failed to write AGENTS.md to '{}'", agents_path.display()))?;
 
         // Build prompt and spawn Codex with prompt as positional argument.
         // Usage: codex [OPTIONS] [PROMPT]
