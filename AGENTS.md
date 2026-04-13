@@ -62,6 +62,36 @@ cargo fmt                # Format
 - `terminal/` does not depend on `daemon/`
 - `daemon/mod.rs` orchestrates worker, isolation, terminal
 
+## System Architecture
+
+```
+CC (Claude Code) — Brain
+  │ MCP (stdio → Unix Socket)
+  ▼
+orcad (daemon) — Orchestration layer
+  │ Task scheduling + escalation routing + isolation
+  ▼
+Worker (Codex × N) — Execution layer
+  │ Code implementation + testing
+  └ Terminal panes (Ghostty/iTerm2)
+```
+
+Three layers: CC does plan/review/decisions. Daemon does scheduling/state/routing. Workers do coding/testing/git.
+
+## Common Operations
+
+### Add a new RPC method
+
+1. Add match arm in `daemon/mod.rs` `handle_request`
+2. Implement handler function
+3. Add corresponding MCP tool in `mcp.rs`
+4. Add corresponding CLI command in `cli/`
+
+### Add a new Worker type
+
+1. Create file in `worker/`, implement `Worker` trait
+2. Register in `daemon/mod.rs`
+
 ## Testing
 
 Tests live in `tests/` directory:
@@ -72,4 +102,5 @@ Tests live in `tests/` directory:
 - `tests/scheduler_test.rs` — DAG scheduling tests
 - `tests/codex_worker_test.rs` — Output parsing tests
 - `tests/isolation_test.rs` — Isolation decision tests
+- `tests/executor_test.rs` — Execution engine tests
 - `tests/e2e_test.rs` — Full daemon lifecycle test
