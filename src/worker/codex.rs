@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
@@ -181,7 +180,7 @@ pub fn generate_prompt(task: &TaskSpec, work_dir: &str) -> String {
 
 /// Metadata stored for each spawned worker process.
 struct WorkerProcess {
-    child: Child,
+    child: Option<Child>,
     work_dir: String,
 }
 
@@ -204,32 +203,14 @@ impl CodexWorker {
 #[async_trait]
 impl Worker for CodexWorker {
     async fn spawn(&self, worker_id: &str, work_dir: &str) -> Result<()> {
-        // Write a base AGENTS.md so Codex picks up the output protocol even
-        // before a task is dispatched.  The file is overwritten with
-        // task-specific content in `dispatch`.
-        let agents_path = Path::new(work_dir).join("AGENTS.md");
-        std::fs::write(&agents_path, AGENTS_MD_TEMPLATE)
-            .with_context(|| format!("failed to write AGENTS.md to '{}'", agents_path.display()))?;
-
-        let child = Command::new(&self.config.command)
-            .args(&self.config.args)
-            .current_dir(work_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "failed to spawn worker '{}' with command '{}'",
-                    worker_id, self.config.command
-                )
-            })?;
-
+        // spawn only registers the work_dir. The actual process is started
+        // in dispatch() because Codex CLI takes the prompt as a positional
+        // argument, not via stdin.
         let mut procs = self.processes.lock().await;
         procs.insert(
             worker_id.to_string(),
             WorkerProcess {
-                child,
+                child: None,
                 work_dir: work_dir.to_string(),
             },
         );
@@ -242,34 +223,35 @@ impl Worker for CodexWorker {
             .get_mut(worker_id)
             .ok_or_else(|| anyhow!("worker '{}' not found", worker_id))?;
 
-        // Overwrite AGENTS.md with task-specific content so Codex has full
-        // context about the current task, scoped files, and constraints.
+        // Write task-specific AGENTS.md so Codex has full context.
         let agents_path = Path::new(&wp.work_dir).join("AGENTS.md");
         let agents_content = generate_agents_md(task);
         std::fs::write(&agents_path, &agents_content).with_context(|| {
             format!(
-                "failed to write task-specific AGENTS.md to '{}'",
+                "failed to write AGENTS.md to '{}'",
                 agents_path.display()
             )
         })?;
 
-        let stdin = wp
-            .child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| anyhow!("stdin not available for worker '{}'", worker_id))?;
+        // Build prompt and spawn Codex with prompt as positional argument.
+        // Usage: codex [OPTIONS] [PROMPT]
+        let prompt = generate_prompt(task, &wp.work_dir);
+        let child = Command::new(&self.config.command)
+            .args(&self.config.args)
+            .arg(&prompt)
+            .current_dir(&wp.work_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "failed to spawn codex for worker '{}' in '{}'",
+                    worker_id, wp.work_dir
+                )
+            })?;
 
-        let work_dir = "."; // Use child's cwd set during spawn
-        let prompt = generate_prompt(task, work_dir);
-        stdin
-            .write_all(prompt.as_bytes())
-            .await
-            .with_context(|| format!("failed to write prompt to worker '{}'", worker_id))?;
-        stdin
-            .flush()
-            .await
-            .with_context(|| format!("failed to flush stdin for worker '{}'", worker_id))?;
-
+        wp.child = Some(child);
         Ok(())
     }
 
@@ -279,9 +261,12 @@ impl Worker for CodexWorker {
             .get_mut(worker_id)
             .ok_or_else(|| anyhow!("worker '{}' not found", worker_id))?;
 
-        match wp.child.try_wait()? {
-            Some(_status) => Ok(WorkerStatus::Dead),
-            None => Ok(WorkerStatus::Busy),
+        match &mut wp.child {
+            Some(child) => match child.try_wait()? {
+                Some(_status) => Ok(WorkerStatus::Dead),
+                None => Ok(WorkerStatus::Busy),
+            },
+            None => Ok(WorkerStatus::Idle),
         }
     }
 
@@ -291,19 +276,21 @@ impl Worker for CodexWorker {
             .get_mut(worker_id)
             .ok_or_else(|| anyhow!("worker '{}' not found", worker_id))?;
 
-        wp.child
-            .kill()
-            .await
-            .with_context(|| format!("failed to kill worker '{}'", worker_id))?;
-
+        if let Some(child) = &mut wp.child {
+            child
+                .kill()
+                .await
+                .with_context(|| format!("failed to kill worker '{}'", worker_id))?;
+        }
         Ok(())
     }
 
     async fn cleanup(&self, worker_id: &str) -> Result<()> {
         let mut procs = self.processes.lock().await;
         if let Some(mut wp) = procs.remove(worker_id) {
-            // Try to kill if still running; ignore errors (may already be dead).
-            let _ = wp.child.kill().await;
+            if let Some(mut child) = wp.child.take() {
+                let _ = child.kill().await;
+            }
         }
         Ok(())
     }
@@ -313,7 +300,7 @@ impl Worker for CodexWorker {
         let wp = procs
             .get_mut(worker_id)
             .ok_or_else(|| anyhow!("worker '{}' not found", worker_id))?;
-        Ok(wp.child.stdout.take())
+        Ok(wp.child.as_mut().and_then(|c| c.stdout.take()))
     }
 
     fn worker_type(&self) -> &str {

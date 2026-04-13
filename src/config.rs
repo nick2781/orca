@@ -104,7 +104,7 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             command: "codex".to_string(),
-            args: vec!["--full-auto".to_string(), "-q".to_string()],
+            args: vec!["exec".to_string()],
             timeout_secs: 300,
             max_retries: 2,
         }
