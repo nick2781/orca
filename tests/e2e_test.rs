@@ -29,6 +29,16 @@ async fn test_daemon_plan_lifecycle() {
         .expect("git init");
     assert!(git_init.status.success(), "git init failed");
 
+    // Configure git user for CI environments where no global config exists
+    let _ = Command::new("git")
+        .args(["config", "user.email", "test@orca.dev"])
+        .current_dir(&project_dir)
+        .output();
+    let _ = Command::new("git")
+        .args(["config", "user.name", "orca-test"])
+        .current_dir(&project_dir)
+        .output();
+
     let git_commit = Command::new("git")
         .args(["commit", "--allow-empty", "-m", "init"])
         .current_dir(&project_dir)
