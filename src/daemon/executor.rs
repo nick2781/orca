@@ -7,7 +7,7 @@ use anyhow::Result;
 use serde_json::json;
 use tracing::{error, info};
 
-use crate::config::{Config, EscalationConfig};
+use crate::config::Config;
 use crate::daemon::scheduler::Scheduler;
 use crate::daemon::state::StateStore;
 use crate::escalation::{
@@ -311,33 +311,35 @@ impl TaskExecutor {
 
         // Launch Codex in a user-visible terminal pane.
         let pane_label = format!("{} ({})", task_id, worker_id);
-        match self.terminal.create_pane(&cmd, &pane_label).await {
-            Ok(pane_id) => info!(worker_id, pane_id, "worker launched in terminal pane"),
+        let pane_id = match self.terminal.create_pane(&cmd, &pane_label).await {
+            Ok(id) => {
+                info!(worker_id, pane_id = %id, "worker launched in terminal pane");
+                Some(id)
+            }
             Err(e) => {
                 error!(worker_id, "failed to open terminal pane: {e:#}");
-                // Print command for manual execution as fallback.
                 eprintln!("Run manually: {}", cmd);
+                None
             }
-        }
+        };
 
         // Spawn background monitor that polls git state for completion.
         let monitor_state = Arc::clone(&self.state);
         let task_id_owned = task_id.to_string();
         let worker_id_owned = worker_id.clone();
         let work_dir_path = PathBuf::from(&work_dir_str);
-        let esc_config = self.config.escalation.clone();
         let timeout = self.config.codex_worker_config().timeout_secs;
 
         tokio::spawn(async move {
-            monitor_task_completion(
-                monitor_state,
-                task_id_owned,
-                worker_id_owned,
-                work_dir_path,
+            monitor_task_completion(MonitorParams {
+                state: monitor_state,
+                task_id: task_id_owned,
+                worker_id: worker_id_owned,
+                work_dir: work_dir_path,
                 initial_head,
-                timeout,
-                esc_config,
-            )
+                timeout_secs: timeout,
+                pane_id,
+            })
             .await;
         });
 
@@ -366,20 +368,35 @@ fn get_git_diff_stat(work_dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Kill any codex process running in the given working directory.
-fn kill_codex_in_workdir(work_dir: &Path) {
-    // Find codex PIDs matching the work dir
-    let output = std::process::Command::new("pgrep")
-        .args(["-f", &format!("codex.*{}", work_dir.display())])
-        .output();
+/// Gracefully exit codex in a Ghostty pane and close the pane.
+///
+/// Sends `/exit\n` via Ghostty AppleScript to ask codex to quit,
+/// waits briefly, then closes the pane.
+async fn graceful_exit_codex(pane_id: &str) {
+    // Send /exit command to codex
+    let exit_script = format!(
+        r#"tell application "Ghostty" to input text "/exit\n" to terminal id "{}""#,
+        pane_id
+    );
+    let _ = tokio::process::Command::new("osascript")
+        .args(["-e", &exit_script])
+        .output()
+        .await;
 
-    if let Ok(output) = output {
-        let pids = String::from_utf8_lossy(&output.stdout);
-        for pid in pids.trim().lines() {
-            let _ = std::process::Command::new("kill").arg(pid.trim()).output();
-        }
-        tracing::info!("killed codex processes for {}", work_dir.display());
-    }
+    // Wait for codex to process the exit
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // Close the terminal pane
+    let close_script = format!(
+        r#"tell application "Ghostty" to close terminal id "{}""#,
+        pane_id
+    );
+    let _ = tokio::process::Command::new("osascript")
+        .args(["-e", &close_script])
+        .output()
+        .await;
+
+    info!(pane_id, "sent /exit to codex and closed pane");
 }
 
 /// Check whether a codex process is still running in the given directory.
@@ -402,15 +419,26 @@ fn is_codex_running(work_dir: &Path) -> bool {
 /// Checks periodically whether the codex process has exited and whether
 /// it produced git changes (new commits or uncommitted work). Transitions
 /// the task to Done/Review on success, or Blocked on failure/timeout.
-async fn monitor_task_completion(
+struct MonitorParams {
     state: Arc<Mutex<StateStore>>,
     task_id: String,
     worker_id: String,
     work_dir: PathBuf,
     initial_head: String,
     timeout_secs: u64,
-    _esc_config: EscalationConfig,
-) {
+    pane_id: Option<String>,
+}
+
+async fn monitor_task_completion(p: MonitorParams) {
+    let MonitorParams {
+        state,
+        task_id,
+        worker_id,
+        work_dir,
+        initial_head,
+        timeout_secs,
+        pane_id,
+    } = p;
     let start = std::time::Instant::now();
 
     loop {
@@ -427,28 +455,33 @@ async fn monitor_task_completion(
             let diff = get_git_diff_stat(&work_dir);
             info!(task_id, worker_id, "codex produced commits — task complete");
 
-            let mut store = state.lock().unwrap();
-            if let Some(task) = store.get_task_mut(&task_id) {
-                task.output = Some(TaskOutput {
-                    files_changed: vec![],
-                    tests_passed: false,
-                    diff_summary: diff,
-                    stdout: String::new(),
-                });
-                let _ = task.transition_to(TaskState::Done);
-                let _ = task.transition_to(TaskState::Review);
+            {
+                let mut store = state.lock().unwrap();
+                if let Some(task) = store.get_task_mut(&task_id) {
+                    task.output = Some(TaskOutput {
+                        files_changed: vec![],
+                        tests_passed: false,
+                        diff_summary: diff,
+                        stdout: String::new(),
+                    });
+                    let _ = task.transition_to(TaskState::Done);
+                    let _ = task.transition_to(TaskState::Review);
+                }
+                if let Some(w) = store.get_worker_mut(&worker_id) {
+                    w.status = WorkerStatus::Dead;
+                    w.current_task_id = None;
+                }
+                let _ = store.save();
+                let _ = store.log_event(
+                    "task_completed",
+                    json!({ "task_id": task_id, "worker_id": worker_id }),
+                );
+            } // release lock before await
+
+            // Gracefully exit codex and close the terminal pane.
+            if let Some(ref pid) = pane_id {
+                graceful_exit_codex(pid).await;
             }
-            if let Some(w) = store.get_worker_mut(&worker_id) {
-                w.status = WorkerStatus::Dead;
-                w.current_task_id = None;
-            }
-            let _ = store.save();
-            let _ = store.log_event(
-                "task_completed",
-                json!({ "task_id": task_id, "worker_id": worker_id }),
-            );
-            // Kill codex process that may still be running (e.g. --full-auto mode).
-            kill_codex_in_workdir(&work_dir);
             break;
         }
 
@@ -487,32 +520,37 @@ async fn monitor_task_completion(
         if start.elapsed().as_secs() > timeout_secs {
             info!(task_id, worker_id, "task timed out after {}s", timeout_secs);
 
-            let escalation_id = format!("esc-timeout-{}", task_id);
-            let mut store = state.lock().unwrap();
-            if let Some(task) = store.get_task_mut(&task_id) {
-                let _ = task.transition_to(TaskState::Blocked);
-                task.escalation_id = Some(escalation_id.clone());
+            {
+                let escalation_id = format!("esc-timeout-{}", task_id);
+                let mut store = state.lock().unwrap();
+                if let Some(task) = store.get_task_mut(&task_id) {
+                    let _ = task.transition_to(TaskState::Blocked);
+                    task.escalation_id = Some(escalation_id.clone());
+                }
+                if let Some(w) = store.get_worker_mut(&worker_id) {
+                    w.status = WorkerStatus::Dead;
+                    w.current_task_id = None;
+                }
+                store.add_escalation(EscalationRequest {
+                    id: escalation_id,
+                    task_id: task_id.clone(),
+                    worker_id: worker_id.clone(),
+                    category: EscalationCategory::Timeout,
+                    summary: format!("Task exceeded timeout of {}s", timeout_secs),
+                    options: vec![],
+                    context: EscalationContext::default(),
+                });
+                let _ = store.save();
+                let _ = store.log_event(
+                    "task_timeout",
+                    json!({ "task_id": task_id, "worker_id": worker_id }),
+                );
+            } // release lock before await
+
+            // Gracefully exit the timed-out codex process.
+            if let Some(ref pid) = pane_id {
+                graceful_exit_codex(pid).await;
             }
-            if let Some(w) = store.get_worker_mut(&worker_id) {
-                w.status = WorkerStatus::Dead;
-                w.current_task_id = None;
-            }
-            store.add_escalation(EscalationRequest {
-                id: escalation_id,
-                task_id: task_id.clone(),
-                worker_id: worker_id.clone(),
-                category: EscalationCategory::Timeout,
-                summary: format!("Task exceeded timeout of {}s", timeout_secs),
-                options: vec![],
-                context: EscalationContext::default(),
-            });
-            let _ = store.save();
-            let _ = store.log_event(
-                "task_timeout",
-                json!({ "task_id": task_id, "worker_id": worker_id }),
-            );
-            // Kill the timed-out codex process.
-            kill_codex_in_workdir(&work_dir);
             break;
         }
     }
