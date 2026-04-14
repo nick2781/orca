@@ -35,14 +35,12 @@ pub struct GhosttyTerminal {
 
 impl GhosttyTerminal {
     pub fn new(config: &TerminalConfig) -> Self {
-        // Capture the focused terminal NOW (at daemon startup time,
-        // while the user's Ghostty window is still in front).
-        let origin_id = tokio::runtime::Handle::current()
-            .block_on(get_focused_terminal())
-            .unwrap_or_default();
-
+        // Capture origin terminal synchronously (no tokio runtime needed).
+        let origin_id = get_focused_terminal_sync().unwrap_or_default();
         if origin_id.is_empty() {
-            tracing::warn!("could not capture Ghostty terminal UUID at startup — splits may go to wrong window");
+            tracing::warn!(
+                "could not capture Ghostty terminal UUID — splits may go to wrong window"
+            );
         } else {
             tracing::info!(terminal_id = %origin_id, "captured origin Ghostty terminal");
         }
@@ -112,6 +110,19 @@ impl Terminal for GhosttyTerminal {
 // Ghostty AppleScript helpers (1.3+ scripting dictionary)
 // Reference: https://github.com/ashsidhu/gx-ghostty
 // ---------------------------------------------------------------------------
+
+/// Synchronous version for use during construction (outside tokio runtime).
+fn get_focused_terminal_sync() -> Result<String> {
+    let script = r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#;
+    let output = std::process::Command::new("osascript")
+        .args(["-e", script])
+        .output()
+        .context("failed to run osascript")?;
+    if !output.status.success() {
+        anyhow::bail!("Ghostty AppleScript failed");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
 
 async fn get_focused_terminal() -> Result<String> {
     let script = r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#;
