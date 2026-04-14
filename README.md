@@ -30,12 +30,12 @@ Orca needs terminals that support **programmatic split-pane creation** — the a
 
 | Terminal | Split API | Status |
 |----------|----------|--------|
-| **WezTerm** | `wezterm cli split-pane -- cmd` | Planned |
-| **kitty** | `kitten @ launch --type=window cmd` | Planned |
-| **iTerm2** | AppleScript / Python API | Supported |
-| **Ghostty** | AppleScript split + focus API | Supported |
-| **Zellij** | `zellij action new-pane -- cmd` | Planned |
-| **Any terminal** | Manual mode (user splits + runs command) | Supported fallback |
+| **Ghostty** | AppleScript split + focus API | ✅ |
+| **iTerm2** | AppleScript / Python API | ✅ |
+| **WezTerm** | `wezterm cli split-pane -- cmd` | planned |
+| **kitty** | `kitten @ launch --type=window cmd` | planned |
+| **Zellij** | `zellij action new-pane -- cmd` | planned |
+| **Any terminal** | Manual mode (user splits + runs command) | ✅ fallback |
 
 **Ghostty users**: Orca works today through AppleScript-driven split, focus, and terminal targeting. A native Ghostty CLI split API would still be better. See [ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353).
 
@@ -74,19 +74,9 @@ cc_first = ["conflict", "scope_exceeded"]
 
 ## Install
 
-Pre-release / current branch:
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
 ```
-
-Stable release channel:
-
-```bash
-curl -fsSL https://github.com/Nick2781/orca/releases/latest/download/install.sh | sh
-```
-
-The `main` installer falls back to a source build when no GitHub release exists yet. The release installer is the stable path once tagged releases are available.
 
 Or build from source:
 

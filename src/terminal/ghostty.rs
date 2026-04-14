@@ -118,9 +118,13 @@ impl Terminal for GhosttyTerminal {
             "created ghostty split pane"
         );
 
-        // Send command + newline to the new pane (by UUID, no focus change).
+        // Send command to the new pane, then refocus origin so CC keeps input.
         let cmd_with_newline = format!("{}\n", cmd);
         input_text(&new_id, &cmd_with_newline).await?;
+
+        if !self.origin_terminal_id.is_empty() {
+            focus_terminal(&self.origin_terminal_id).await?;
+        }
 
         Ok(new_id)
     }

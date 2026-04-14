@@ -81,8 +81,11 @@ Three layers: CC does plan/review/decisions. Daemon does scheduling/state/routin
 
 **Worker execution model:** Workers run in user-visible terminal split panes (Ghostty/iTerm2).
 Daemon does NOT pipe stdout — user watches Codex work in real time.
-Task completion detected by reading Codex session logs (`~/.codex/sessions/`) for `[ORCA:DONE]` markers and `task_complete` events.
-Escalations actively notify CC's terminal (focus pane + macOS notification).
+Workers communicate with daemon via `orca worker` CLI commands (IPC over Unix socket):
+- `orca worker exec` — daemon executes commands on behalf (bypasses sandbox)
+- `orca worker done` — report task completion
+- `orca worker escalate` — escalate decisions to CC
+Session log monitoring is a fallback. No keystroke injection.
 
 ## Common Operations
 

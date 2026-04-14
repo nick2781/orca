@@ -557,19 +557,19 @@ fn read_session_events(path: &Path, offset: u64) -> (Vec<SessionEvent>, u64) {
 
 fn is_approval_request_message(msg: &str) -> bool {
     let lower = msg.to_ascii_lowercase();
-    let mentions_sandbox = lower.contains("sandbox");
-    let mentions_approval_flow = lower.contains("requesting")
+    // Must mention permission/approval/elevation AND a scope indicator.
+    let needs_access = lower.contains("requesting")
         || lower.contains("approval")
         || lower.contains("permission")
-        || lower.contains("elevated")
-        || lower.contains("blocked")
-        || lower.contains("denied")
-        || lower.contains("denies")
-        || lower.contains("restriction")
+        || lower.contains("elevated");
+    let scope_indicator = lower.contains("sandbox")
         || lower.contains("writable root")
-        || lower.contains("writable sandbox");
+        || lower.contains("writable sandbox")
+        || lower.contains("outside the writable")
+        || lower.contains(".git")
+        || lower.contains("worktree");
 
-    mentions_sandbox && mentions_approval_flow
+    needs_access && scope_indicator
 }
 
 /// Check whether a codex session is still active by checking if the
@@ -814,7 +814,8 @@ async fn monitor_task_completion(p: MonitorParams) {
                         if is_worktree {
                             info!(task_id, worker_id, "auto-approving (worktree isolated)");
                             if let Some(ref pid) = pane_id {
-                                let _ = terminal.send_text(pid, "y").await;
+                                // Codex TUI approval: press Enter to confirm.
+                                let _ = terminal.send_text(pid, "\n").await;
                             }
                             let _ = state.lock().unwrap().log_event(
                                 "approval_auto",
