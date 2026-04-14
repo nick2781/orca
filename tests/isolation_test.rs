@@ -37,8 +37,8 @@ fn test_auto_no_overlap_uses_worktree() {
     assert_eq!(
         decision,
         IsolationDecision::Worktree {
-            path: PathBuf::from("/repo/.agent/worktree/t1"),
-            branch: "orca/t1".to_string(),
+            path: PathBuf::from("/repo/.agent/worktree/task-t1"),
+            branch: "orca/task-t1".to_string(),
         }
     );
 }
@@ -80,8 +80,8 @@ fn test_explicit_worktree_mode() {
     assert_eq!(
         decision,
         IsolationDecision::Worktree {
-            path: PathBuf::from("/repo/.agent/worktree/feature-x"),
-            branch: "orca/feature-x".to_string(),
+            path: PathBuf::from("/repo/.agent/worktree/task-feature-x"),
+            branch: "orca/task-feature-x".to_string(),
         }
     );
 }

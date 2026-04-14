@@ -75,6 +75,9 @@ pub enum Commands {
     /// Show resolved configuration
     Config,
 
+    /// Upgrade orca to the latest version
+    Upgrade,
+
     /// Run the MCP server (placeholder)
     McpServer,
 }

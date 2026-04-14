@@ -64,6 +64,19 @@ async fn main() -> Result<()> {
         Commands::Init => handle_init(&project_dir),
         Commands::Setup { action } => handle_setup(action),
         Commands::Config => handle_config(&config),
+        Commands::Upgrade => {
+            println!("Checking for updates...");
+            let status = std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh",
+                ])
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("upgrade failed");
+            }
+            Ok(())
+        }
         Commands::McpServer => {
             let socket_path = config.socket_path(&project_dir);
             orca::mcp::run_mcp_server(socket_path).await

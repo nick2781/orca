@@ -357,7 +357,21 @@ fn get_git_diff_stat(work_dir: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Kill any codex process running in the given working directory.
+fn kill_codex_in_workdir(work_dir: &Path) {
+    // Find codex PIDs matching the work dir
+    let output = std::process::Command::new("pgrep")
+        .args(["-f", &format!("codex.*{}", work_dir.display())])
+        .output();
 
+    if let Ok(output) = output {
+        let pids = String::from_utf8_lossy(&output.stdout);
+        for pid in pids.trim().lines() {
+            let _ = std::process::Command::new("kill").arg(pid.trim()).output();
+        }
+        tracing::info!("killed codex processes for {}", work_dir.display());
+    }
+}
 
 /// Check whether a codex process is still running in the given directory.
 ///
@@ -424,6 +438,8 @@ async fn monitor_task_completion(
                 "task_completed",
                 json!({ "task_id": task_id, "worker_id": worker_id }),
             );
+            // Kill codex process that may still be running (e.g. --full-auto mode).
+            kill_codex_in_workdir(&work_dir);
             break;
         }
 
@@ -486,6 +502,8 @@ async fn monitor_task_completion(
                 "task_timeout",
                 json!({ "task_id": task_id, "worker_id": worker_id }),
             );
+            // Kill the timed-out codex process.
+            kill_codex_in_workdir(&work_dir);
             break;
         }
     }

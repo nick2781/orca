@@ -152,6 +152,11 @@ MCP tools available in Claude Code:
 | `orca_worker_list` | Worker status |
 | `orca_merge` | Merge accepted branches |
 
+### Workflow
+
+In normal use, CC creates and submits plans via MCP — no manual `plan.json` needed.
+The `orca plan submit` CLI command is available for testing and debugging.
+
 ## CLI
 
 ```bash

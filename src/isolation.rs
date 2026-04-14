@@ -51,10 +51,13 @@ impl IsolationManager {
         use crate::types::IsolationMode;
 
         match task.isolation {
-            IsolationMode::Worktree => IsolationDecision::Worktree {
-                path: self.worktree_base.join(&task.id),
-                branch: format!("orca/{}", task.id),
-            },
+            IsolationMode::Worktree => {
+                let slug = slugify(&task.title);
+                IsolationDecision::Worktree {
+                    path: self.worktree_base.join(&slug),
+                    branch: format!("orca/{}", slug),
+                }
+            }
             IsolationMode::Serial => {
                 // Check file overlap with any running task.
                 for running in running_tasks {
@@ -82,9 +85,10 @@ impl IsolationManager {
                 }
 
                 // No overlap — safe to use a worktree.
+                let slug = slugify(&task.title);
                 IsolationDecision::Worktree {
-                    path: self.worktree_base.join(&task.id),
-                    branch: format!("orca/{}", task.id),
+                    path: self.worktree_base.join(&slug),
+                    branch: format!("orca/{}", slug),
                 }
             }
         }
@@ -173,6 +177,31 @@ impl IsolationManager {
         }
         Ok(())
     }
+}
+
+/// Convert a task title to a filesystem-safe slug.
+/// "Create hello.py" -> "create-hello-py"
+fn slugify(title: &str) -> String {
+    let slug: String = title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    // Collapse multiple dashes and trim
+    let mut result = String::new();
+    let mut prev_dash = false;
+    for c in slug.chars() {
+        if c == '-' {
+            if !prev_dash && !result.is_empty() {
+                result.push('-');
+            }
+            prev_dash = true;
+        } else {
+            result.push(c);
+            prev_dash = false;
+        }
+    }
+    result.trim_end_matches('-').to_string()
 }
 
 /// Check whether two tasks touch any of the same files.
