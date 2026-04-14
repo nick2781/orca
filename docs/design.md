@@ -28,6 +28,22 @@ English | [中文](design.zh-CN.md)
 | tmux 依赖 | 几乎所有方案都绑定 tmux，无法用原生终端分屏 |
 | CC→Codex 编排缺失 | 没有项目完整实现 CC 做主脑 + Codex 做 worker |
 | 提权机制粗糙 | 要么全自动要么全手动，无分级提权 |
+
+### Why NOT tmux
+
+几乎所有多 agent 编排工具（claude-squad, multiclaude, oh-my-claudecode 等）都依赖 tmux。
+orca 选择不用 tmux，原因：
+
+| 问题 | 说明 |
+|------|------|
+| **快捷键体验差** | tmux 的 prefix key（Ctrl+B）+ 命令键学习成本高，与终端、编辑器快捷键冲突 |
+| **与现代终端不兼容** | 在 Ghostty/kitty 等终端中，tmux 的复制、滚动、鼠标行为与原生体验冲突，需要大量配置才能用 |
+| **视觉割裂** | tmux 的 pane 边框、状态栏与终端原生 UI 风格不一致 |
+| **额外依赖** | 用户需要安装和配置 tmux，增加入门门槛 |
+| **现代终端已有原生 API** | Ghostty 1.3+ (AppleScript)、WezTerm (CLI)、kitty (remote control)、iTerm2 (Python API) 都提供了可编程的分屏接口 |
+
+orca 的策略：通过终端适配层（Terminal trait）直接使用各终端的原生 API。
+用户看到的是自己终端的原生分屏，不是 tmux 的虚拟终端。
 | 通信脆弱 | 多数基于终端缓冲区文本解析，不可靠 |
 
 ## 2. Design Goals
@@ -468,11 +484,15 @@ trait Terminal: Send + Sync {
 
 Implementations:
 
-| Provider | Method | Auto-split |
+| Provider | Method | Mechanism |
 |----------|--------|-----------|
-| `GhosttyTerminal` | `ghostty +action new_split_right` | Split pane via IPC |
-| `ItermTerminal` | Python/AppleScript API | Split pane |
-| `ManualTerminal` | User runs command manually | N/A |
+| `GhosttyTerminal` | Ghostty 1.3+ AppleScript API | `split terminal id "UUID" direction right`, UUID-based addressing |
+| `ItermTerminal` | iTerm2 AppleScript API | `split vertically`, `write text` |
+| `WezTermTerminal` | WezTerm CLI | `wezterm cli split-pane -- cmd` (planned) |
+| `KittyTerminal` | kitty remote control | `kitten @ launch` (planned) |
+| `ManualTerminal` | Print command for user | Fallback for unsupported terminals |
+
+Ghostty integration inspired by [gx-ghostty](https://github.com/ashsidhu/gx-ghostty).
 
 #### Configuration
 
