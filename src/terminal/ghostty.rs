@@ -73,9 +73,9 @@ impl Terminal for GhosttyTerminal {
             "created ghostty split pane"
         );
 
-        // Send the command to the new pane (by UUID, no focus required).
-        input_text(&new_id, cmd).await?;
-        send_key(&new_id, "return").await?;
+        // Send the command + newline to the new pane (by UUID, no focus required).
+        let cmd_with_newline = format!("{}\n", cmd);
+        input_text(&new_id, &cmd_with_newline).await?;
 
         Ok(new_id)
     }
@@ -127,16 +127,6 @@ async fn input_text(terminal_id: &str, text: &str) -> Result<()> {
     let script = format!(
         r#"tell application "Ghostty" to input text "{}" to terminal id "{}""#,
         escaped, terminal_id
-    );
-    run_osascript(&script).await?;
-    Ok(())
-}
-
-/// Send a key event to a specific terminal.
-async fn send_key(terminal_id: &str, key: &str) -> Result<()> {
-    let script = format!(
-        r#"tell application "Ghostty" to send key "{}" to terminal id "{}""#,
-        key, terminal_id
     );
     run_osascript(&script).await?;
     Ok(())

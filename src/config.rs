@@ -46,6 +46,10 @@ pub struct WorkerConfigs {
 pub struct WorkerConfig {
     pub command: String,
     pub args: Vec<String>,
+    /// Enable --full-auto mode (sandboxed auto-execution).
+    /// When true, codex runs with workspace-write sandbox + on-request approval.
+    /// When false, codex runs in default interactive mode (asks before every action).
+    pub full_auto: bool,
     pub timeout_secs: u64,
     pub max_retries: u32,
 }
@@ -105,6 +109,7 @@ impl Default for WorkerConfig {
         Self {
             command: "codex".to_string(),
             args: vec![],
+            full_auto: true,
             timeout_secs: 300,
             max_retries: 2,
         }

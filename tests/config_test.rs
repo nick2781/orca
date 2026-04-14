@@ -152,10 +152,8 @@ fn test_codex_worker_config_defaults() {
     let codex = config.codex_worker_config();
 
     assert_eq!(codex.command, "codex");
-    assert!(
-        codex.args.is_empty(),
-        "default args should be empty (interactive mode)"
-    );
+    assert!(codex.args.is_empty(), "default extra args should be empty");
+    assert!(codex.full_auto, "full_auto should default to true");
     assert_eq!(codex.timeout_secs, 300);
     assert_eq!(codex.max_retries, 2);
 }
@@ -166,6 +164,7 @@ fn test_codex_worker_config_from_file() {
     config.worker.codex = Some(WorkerConfig {
         command: "my-codex".to_string(),
         args: vec!["--fast".to_string()],
+        full_auto: false,
         timeout_secs: 60,
         max_retries: 0,
     });

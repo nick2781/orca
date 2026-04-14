@@ -278,16 +278,21 @@ impl TaskExecutor {
         );
         // Escape single quotes for shell safety.
         let escaped_prompt = short_prompt.replace('\'', "'\\''");
-        // Build shell command from config: codex [args...] '<prompt>'
+        // Build shell command from config: codex [flags...] [args...] '<prompt>'
         let worker_config = self.config.codex_worker_config();
-        let args_str = if worker_config.args.is_empty() {
+        let mut flags = Vec::new();
+        if worker_config.full_auto {
+            flags.push("--full-auto".to_string());
+        }
+        flags.extend(worker_config.args.iter().cloned());
+        let flags_str = if flags.is_empty() {
             String::new()
         } else {
-            format!(" {}", worker_config.args.join(" "))
+            format!(" {}", flags.join(" "))
         };
         let cmd = format!(
             "cd '{}' && {}{} '{}'",
-            work_dir_str, worker_config.command, args_str, escaped_prompt
+            work_dir_str, worker_config.command, flags_str, escaped_prompt
         );
 
         // Launch Codex in a user-visible terminal pane.
