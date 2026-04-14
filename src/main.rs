@@ -79,37 +79,142 @@ async fn main() -> Result<()> {
         }
         Commands::McpServer => {
             let socket_path = config.socket_path(&project_dir);
-            orca::mcp::run_mcp_server(socket_path).await
+            let orca_dir = project_dir.join(".orca");
+
+            // Capture origin terminal UUID now — CC's window is in front when MCP starts.
+            let mut origin_uuid = String::new();
+            if config.terminal.provider == "ghostty" {
+                let _ = std::fs::create_dir_all(&orca_dir);
+                let output = std::process::Command::new("osascript")
+                    .args(["-e", r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#])
+                    .output();
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        origin_uuid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if !origin_uuid.is_empty() {
+                            let _ = std::fs::write(orca_dir.join("origin_terminal_id"), &origin_uuid);
+                        }
+                    }
+                }
+            }
+
+            // Auto-start daemon if not running.
+            let daemon_alive = orca::daemon::check_existing_daemon(&orca_dir).is_err();
+            let spawned_daemon = if !daemon_alive {
+                let _ = std::fs::create_dir_all(&orca_dir);
+
+                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("orca"));
+                let mut args = vec![
+                    "daemon".to_string(),
+                    "start".to_string(),
+                    "--project-dir".to_string(),
+                    project_dir.to_string_lossy().to_string(),
+                ];
+                if !origin_uuid.is_empty() {
+                    args.push("--origin-terminal".to_string());
+                    args.push(origin_uuid);
+                }
+                let child = std::process::Command::new(&exe)
+                    .args(&args)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+
+                match child {
+                    Ok(_) => {
+                        // Wait for the socket to appear (up to 5 seconds).
+                        for _ in 0..50 {
+                            if socket_path.exists() {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                        eprintln!("[orca] auto-started daemon");
+                        true
+                    }
+                    Err(e) => {
+                        eprintln!("[orca] failed to auto-start daemon: {e}");
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+
+            let result = orca::mcp::run_mcp_server(socket_path).await;
+
+            // Stop daemon if we started it.
+            if spawned_daemon {
+                if let Some(pid) = orca::daemon::read_pid_file(&orca_dir) {
+                    let _ = std::process::Command::new("kill")
+                        .args([&pid.to_string()])
+                        .status();
+                    eprintln!("[orca] stopped daemon (pid: {pid})");
+                }
+            }
+
+            result
         }
     }
 }
 
 // -- Daemon ------------------------------------------------------------------
 
+/// Tracing timer that uses local timezone via chrono.
+struct LocalTimer;
+
+impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        write!(w, "{}", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z"))
+    }
+}
+
 async fn handle_daemon(action: DaemonAction, config: Config, project_dir: &Path) -> Result<()> {
     match action {
-        DaemonAction::Start { foreground: _ } => {
+        DaemonAction::Start {
+            foreground: _,
+            origin_terminal,
+        } => {
             tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                         tracing_subscriber::EnvFilter::new(&config.daemon.log_level)
                     }),
                 )
+                .with_timer(LocalTimer)
                 .init();
 
-            // Capture the current Ghostty terminal UUID NOW, while we're
-            // still in the user's shell context (correct window in front).
-            // Store it so the daemon can read it later for splits.
+            // Save origin terminal UUID for split pane targeting.
+            // Priority: CLI arg (from MCP auto-start) > file (already saved) > AppleScript fallback.
             if config.terminal.provider == "ghostty" {
                 let orca_dir = project_dir.join(".orca");
-                let output = std::process::Command::new("osascript")
-                    .args(["-e", r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#])
-                    .output();
-                if let Ok(out) = output {
-                    if out.status.success() {
-                        let uuid = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                        let _ = std::fs::write(orca_dir.join("origin_terminal_id"), &uuid);
-                        tracing::info!(terminal_id = %uuid, "captured origin terminal for splits");
+                let origin_file = orca_dir.join("origin_terminal_id");
+
+                if let Some(ref uuid) = origin_terminal {
+                    let _ = std::fs::write(&origin_file, uuid);
+                    tracing::info!(terminal_id = %uuid, "origin terminal from CLI arg");
+                } else if origin_file.exists() {
+                    let existing = std::fs::read_to_string(&origin_file)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    if !existing.is_empty() {
+                        tracing::info!(terminal_id = %existing, "origin terminal from file");
+                    }
+                } else {
+                    // Fallback: front window (best effort for manual starts).
+                    let output = std::process::Command::new("osascript")
+                        .args(["-e", r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#])
+                        .output();
+                    if let Ok(out) = output {
+                        if out.status.success() {
+                            let uuid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                            if !uuid.is_empty() {
+                                let _ = std::fs::write(&origin_file, &uuid);
+                                tracing::info!(terminal_id = %uuid, "origin terminal from front window");
+                            }
+                        }
                     }
                 }
             }
@@ -269,6 +374,40 @@ async fn handle_worker(action: WorkerAction, config: &Config, project_dir: &Path
         WorkerAction::Kill { id } => {
             let resp = ipc_call(&socket_path, "orca_worker_kill", json!({"worker_id": id})).await?;
             print_response(&resp);
+        }
+        WorkerAction::Run { id } => {
+            // Fetch task detail from daemon, build and print the codex command.
+            let resp = ipc_call(&socket_path, "orca_task_detail", json!({"task_id": id})).await?;
+            if let Some(err) = resp.error {
+                println!("Error: {} (code {})", err.message, err.code);
+                return Ok(());
+            }
+            let result = resp.result.unwrap_or_default();
+            let title = result["spec"]["title"].as_str().unwrap_or("");
+            let desc = result["spec"]["description"].as_str().unwrap_or("");
+            let work_dir = result["worktree_path"]
+                .as_str()
+                .unwrap_or(project_dir.to_str().unwrap_or("."));
+
+            let short_prompt = format!(
+                "Implement: {}. {}. Read AGENTS.md for full task context and rules.",
+                title, desc
+            );
+            let escaped_prompt = short_prompt.replace('\'', "'\\''");
+            let worker_config = config.codex_worker_config();
+            let mut parts = vec![worker_config.command.clone()];
+            if worker_config.full_auto {
+                parts.push("--full-auto".to_string());
+            }
+            parts.extend(worker_config.args.iter().cloned());
+            let cmd = format!(
+                "cd '{}' && {} '{}'",
+                work_dir,
+                parts.join(" "),
+                escaped_prompt
+            );
+            println!("Run this command in a new terminal pane:\n");
+            println!("  {}", cmd);
         }
     }
 

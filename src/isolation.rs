@@ -95,7 +95,25 @@ impl IsolationManager {
     }
 
     /// Create a git worktree at `path` with a new branch `branch`.
+    ///
+    /// If the branch or worktree already exists (from a previous run),
+    /// cleans them up first before creating fresh ones.
     pub fn create_worktree(&self, path: &Path, branch: &str) -> Result<()> {
+        // Clean up stale worktree if it exists.
+        if path.exists() {
+            let _ = Command::new("git")
+                .args(["worktree", "remove", "--force"])
+                .arg(path)
+                .current_dir(&self.project_dir)
+                .output();
+        }
+
+        // Delete stale branch if it exists.
+        let _ = Command::new("git")
+            .args(["branch", "-D", branch])
+            .current_dir(&self.project_dir)
+            .output();
+
         let output = Command::new("git")
             .args(["worktree", "add", "-b", branch])
             .arg(path)

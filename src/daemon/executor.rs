@@ -63,6 +63,15 @@ impl TaskExecutor {
         }
     }
 
+    /// Read the origin terminal ID from the .orca directory.
+    fn origin_terminal_id(&self) -> Option<String> {
+        let path = self.project_dir.join(".orca/origin_terminal_id");
+        std::fs::read_to_string(&path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
     /// Start the background execution loop.
     /// Runs indefinitely, polling every 2 seconds.
     pub async fn run(&self) {
@@ -277,36 +286,35 @@ impl TaskExecutor {
             .current_dir(&work_dir_str)
             .output();
 
-        // Record initial HEAD for completion detection.
-        let initial_head = get_git_head(&work_dir_str).unwrap_or_default();
+        // Record launch time for session log discovery.
+        let launch_time = chrono::Utc::now();
+
+        // Pre-configure trust in codex config so interactive mode won't prompt.
+        ensure_codex_trust(&work_dir_str);
 
         // Build prompt and shell command to run Codex in the terminal pane.
         let short_prompt = format!(
             "Implement: {}. {}. Read AGENTS.md for full task context and rules.",
             task_spec.title, task_spec.description
         );
-        // Escape single quotes for shell safety.
         let escaped_prompt = short_prompt.replace('\'', "'\\''");
-        // Build shell command from config: codex [flags...] [args...] '<prompt>'
         let worker_config = self.config.codex_worker_config();
-        let mut flags = Vec::new();
+        let mut parts = vec![worker_config.command.clone()];
         if worker_config.full_auto {
-            flags.push("--full-auto".to_string());
+            parts.push("--full-auto".to_string());
         }
-        // Auto-trust the worktree directory via -c flag (no global config modification).
-        flags.push(format!(
-            "-c projects.\"{}\".trust_level=\"trusted\"",
-            work_dir_str.replace('"', "\\\"")
-        ));
-        flags.extend(worker_config.args.iter().cloned());
-        let flags_str = if flags.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", flags.join(" "))
-        };
+        // Worktrees: allow sandbox to write main repo's .git (needed for git commit).
+        if matches!(decision, IsolationDecision::Worktree { .. }) {
+            let canonical = std::fs::canonicalize(&self.project_dir)
+                .unwrap_or_else(|_| self.project_dir.clone());
+            parts.push(format!("--add-dir={}", canonical.display()));
+        }
+        parts.extend(worker_config.args.iter().cloned());
         let cmd = format!(
-            "cd '{}' && {}{} '{}'",
-            work_dir_str, worker_config.command, flags_str, escaped_prompt
+            "cd '{}' && {} '{}'",
+            work_dir_str,
+            parts.join(" "),
+            escaped_prompt
         );
 
         // Launch Codex in a user-visible terminal pane.
@@ -323,22 +331,28 @@ impl TaskExecutor {
             }
         };
 
-        // Spawn background monitor that polls git state for completion.
+        // Spawn background monitor that reads codex session logs.
         let monitor_state = Arc::clone(&self.state);
+        let monitor_terminal = Arc::clone(&self.terminal);
         let task_id_owned = task_id.to_string();
         let worker_id_owned = worker_id.clone();
         let work_dir_path = PathBuf::from(&work_dir_str);
         let timeout = self.config.codex_worker_config().timeout_secs;
+        let origin_id = self.origin_terminal_id();
 
+        let decision_clone = decision.clone();
         tokio::spawn(async move {
             monitor_task_completion(MonitorParams {
                 state: monitor_state,
+                terminal: monitor_terminal,
                 task_id: task_id_owned,
                 worker_id: worker_id_owned,
                 work_dir: work_dir_path,
-                initial_head,
+                launch_time,
                 timeout_secs: timeout,
                 pane_id,
+                origin_terminal_id: origin_id,
+                decision: decision_clone,
             })
             .await;
         });
@@ -347,63 +361,206 @@ impl TaskExecutor {
     }
 }
 
-// -- Git state helpers for completion detection --
-
-/// Get the current HEAD commit hash for a git working directory.
-fn get_git_head(work_dir: &str) -> Result<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(work_dir)
-        .output()?;
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+/// Write a project-local `.codex/config.toml` in the worktree directory
+/// so codex trusts it without modifying global config.
+fn ensure_codex_trust(work_dir: &str) {
+    let codex_dir = Path::new(work_dir).join(".codex");
+    let _ = std::fs::create_dir_all(&codex_dir);
+    let config_path = codex_dir.join("config.toml");
+    if config_path.exists() {
+        return;
+    }
+    let _ = std::fs::write(&config_path, "trust_level = \"trusted\"\n");
+    info!(work_dir, "wrote project-local codex trust config");
 }
 
-/// Get `git diff --stat` output for a working directory.
-fn get_git_diff_stat(work_dir: &Path) -> String {
-    std::process::Command::new("git")
-        .args(["diff", "--stat"])
-        .current_dir(work_dir)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default()
-}
+// -- Codex session log helpers for completion detection --
 
-/// Gracefully exit codex in a Ghostty pane and close the pane.
+/// Find the codex session log file matching a worker's working directory.
 ///
-/// Sends `/exit\n` via Ghostty AppleScript to ask codex to quit,
-/// waits briefly, then closes the pane.
-async fn graceful_exit_codex(pane_id: &str) {
-    // Send /exit command to codex
-    let exit_script = format!(
-        r#"tell application "Ghostty" to input text "/exit\n" to terminal id "{}""#,
-        pane_id
-    );
-    let _ = tokio::process::Command::new("osascript")
-        .args(["-e", &exit_script])
-        .output()
-        .await;
+/// Codex writes session logs to `~/.codex/sessions/<Y>/<M>/<D>/<session>.jsonl`.
+/// Each session starts with a `session_meta` event containing the `cwd`.
+/// We scan recent files created after `after` to find the matching session.
+fn find_session_log(work_dir: &Path, after: chrono::DateTime<chrono::Utc>) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let sessions_dir = home.join(".codex/sessions");
+    let date = after.format("%Y/%m/%d").to_string();
+    let day_dir = sessions_dir.join(&date);
 
-    // Wait for codex to process the exit
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    if !day_dir.exists() {
+        return None;
+    }
 
-    // Close the terminal pane
-    let close_script = format!(
-        r#"tell application "Ghostty" to close terminal id "{}""#,
-        pane_id
-    );
-    let _ = tokio::process::Command::new("osascript")
-        .args(["-e", &close_script])
-        .output()
-        .await;
+    let work_dir_str = work_dir.to_string_lossy();
+    // Also match the /private prefix macOS adds to /tmp paths.
+    let work_dir_private = format!("/private{}", work_dir_str);
 
-    info!(pane_id, "sent /exit to codex and closed pane");
+    let mut entries: Vec<_> = std::fs::read_dir(&day_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+
+    // Sort by modification time descending (newest first).
+    entries.sort_by(|a, b| {
+        b.metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            .cmp(
+                &a.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
+    });
+
+    for entry in entries {
+        let path = entry.path();
+        // Read just the first line (session_meta) to check cwd and timestamp.
+        if let Ok(first_line) = read_first_line(&path) {
+            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&first_line) {
+                if obj.get("type").and_then(|t| t.as_str()) == Some("session_meta") {
+                    // Check timestamp is after launch_time.
+                    if let Some(ts) = obj.get("timestamp").and_then(|t| t.as_str()) {
+                        if let Ok(session_time) = chrono::DateTime::parse_from_rfc3339(ts) {
+                            if session_time < after {
+                                continue; // Session is older than the worker launch.
+                            }
+                        }
+                    }
+                    if let Some(cwd) = obj
+                        .get("payload")
+                        .and_then(|p| p.get("cwd"))
+                        .and_then(|c| c.as_str())
+                    {
+                        if cwd == work_dir_str || cwd == work_dir_private {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
-/// Check whether a codex process is still running in the given directory.
-///
-/// Uses `pgrep -f` to search for a codex process whose command line
-/// references the working directory.
-fn is_codex_running(work_dir: &Path) -> bool {
+/// Read the first line of a file.
+fn read_first_line(path: &Path) -> Result<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    Ok(line)
+}
+
+/// Outcome from parsing codex session log events.
+enum SessionEvent {
+    /// Task completed successfully with output.
+    Done(TaskOutput),
+    /// Worker is escalating a decision.
+    Escalate(String),
+    /// Worker is blocked.
+    Blocked(String),
+    /// Progress update.
+    Progress(String),
+    /// Codex session ended (task_complete event).
+    SessionComplete(String),
+    /// Codex is waiting for user approval (sandbox prompt).
+    ApprovalNeeded(String),
+}
+
+/// Read new lines from a session log file starting at `offset`.
+/// Returns parsed events and the new file offset.
+fn read_session_events(path: &Path, offset: u64) -> (Vec<SessionEvent>, u64) {
+    use std::io::{BufRead, Seek, SeekFrom};
+
+    let mut events = Vec::new();
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return (events, offset),
+    };
+    let mut reader = std::io::BufReader::new(file);
+    if reader.seek(SeekFrom::Start(offset)).is_err() {
+        return (events, offset);
+    }
+
+    let mut new_offset = offset;
+    let mut line = String::new();
+    while reader.read_line(&mut line).unwrap_or(0) > 0 {
+        new_offset = reader.stream_position().unwrap_or(new_offset);
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+            let event_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if event_type == "event_msg" {
+                if let Some(payload) = obj.get("payload") {
+                    let pt = payload.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    match pt {
+                        "task_complete" => {
+                            let msg = payload
+                                .get("last_agent_message")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            events.push(SessionEvent::SessionComplete(msg));
+                        }
+                        "agent_message" => {
+                            if let Some(msg) = payload.get("message").and_then(|m| m.as_str()) {
+                                // Detect approval requests before marker parsing.
+                                if msg.contains("requesting approval")
+                                    || msg.contains("requesting elevated")
+                                    || msg.contains("blocked by the sandbox")
+                                {
+                                    events.push(SessionEvent::ApprovalNeeded(msg.to_string()));
+                                    line.clear();
+                                    continue;
+                                }
+                                let parsed = crate::worker::codex::parse_worker_line(msg);
+                                match parsed {
+                                    crate::worker::WorkerMessage::Done(output) => {
+                                        events.push(SessionEvent::Done(output));
+                                    }
+                                    crate::worker::WorkerMessage::Escalate(v) => {
+                                        events.push(SessionEvent::Escalate(v.to_string()));
+                                    }
+                                    crate::worker::WorkerMessage::Blocked(v) => {
+                                        events.push(SessionEvent::Blocked(v.to_string()));
+                                    }
+                                    crate::worker::WorkerMessage::Progress(s) => {
+                                        events.push(SessionEvent::Progress(s));
+                                    }
+                                    crate::worker::WorkerMessage::Output(_) => {}
+                                }
+                            }
+                        }
+                        "turn_aborted" => {
+                            events
+                                .push(SessionEvent::Blocked("codex turn was aborted".to_string()));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        line.clear();
+    }
+
+    (events, new_offset)
+}
+
+/// Check whether a codex session is still active by checking if the
+/// session log file was modified recently (within the last 30 seconds).
+/// Falls back to pgrep if no session log is available.
+fn is_codex_active(session_log: &Option<PathBuf>, work_dir: &Path) -> bool {
+    // Primary: check if session log was recently modified.
+    if let Some(ref log_path) = session_log {
+        if let Ok(meta) = std::fs::metadata(log_path) {
+            if let Ok(modified) = meta.modified() {
+                let age = modified.elapsed().unwrap_or(Duration::from_secs(999));
+                return age < Duration::from_secs(30);
+            }
+        }
+    }
+    // Fallback: pgrep for codex processes with the work dir.
     let pattern = format!("codex.*{}", work_dir.display());
     std::process::Command::new("pgrep")
         .args(["-f", &pattern])
@@ -414,123 +571,372 @@ fn is_codex_running(work_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Monitor task completion by polling git state instead of reading stdout.
+/// Gracefully exit codex in a terminal pane and close the pane.
+async fn graceful_exit_codex(terminal: &Arc<dyn Terminal>, pane_id: &str) {
+    let _ = terminal.send_text(pane_id, "/exit\n").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let _ = terminal.close_pane(pane_id).await;
+    info!(pane_id, "sent /exit to codex and closed pane");
+}
+
+/// Notify the main agent terminal about an escalation.
+async fn notify_escalation(
+    terminal: &Arc<dyn Terminal>,
+    origin_id: &Option<String>,
+    task_id: &str,
+    summary: &str,
+) {
+    // Focus the origin terminal (CC's pane).
+    if let Some(ref id) = origin_id {
+        let _ = terminal.focus_pane(id).await;
+    }
+    // Send macOS notification.
+    let _ = tokio::process::Command::new("osascript")
+        .args([
+            "-e",
+            &format!(
+                "display notification \"{}\" with title \"Orca Escalation\" subtitle \"{}\"",
+                summary.replace('"', "'"),
+                task_id
+            ),
+        ])
+        .output()
+        .await;
+}
+
+/// Monitor task completion by reading codex session logs.
 ///
-/// Checks periodically whether the codex process has exited and whether
-/// it produced git changes (new commits or uncommitted work). Transitions
-/// the task to Done/Review on success, or Blocked on failure/timeout.
+/// Finds the session log file matching the worker's working directory,
+/// then tails it for completion/escalation events. Falls back to
+/// process exit detection if no session log is found.
 struct MonitorParams {
     state: Arc<Mutex<StateStore>>,
+    terminal: Arc<dyn Terminal>,
     task_id: String,
     worker_id: String,
     work_dir: PathBuf,
-    initial_head: String,
+    launch_time: chrono::DateTime<chrono::Utc>,
     timeout_secs: u64,
     pane_id: Option<String>,
+    origin_terminal_id: Option<String>,
+    decision: IsolationDecision,
 }
 
 async fn monitor_task_completion(p: MonitorParams) {
     let MonitorParams {
         state,
+        terminal,
         task_id,
         worker_id,
         work_dir,
-        initial_head,
+        launch_time,
         timeout_secs,
         pane_id,
+        origin_terminal_id,
+        decision,
     } = p;
     let start = std::time::Instant::now();
 
+    // Wait for codex to initialize and create its session log.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let mut session_log: Option<PathBuf> = None;
+    let mut log_offset: u64 = 0;
+
     loop {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let work_dir_str = work_dir.to_str().unwrap_or(".");
-        let current_head = get_git_head(work_dir_str).unwrap_or_default();
-        let has_new_commits = !current_head.is_empty() && current_head != initial_head;
-        let codex_running = is_codex_running(&work_dir);
-
-        // Case 1: New commits detected — task completed (regardless of process state).
-        // Codex in --full-auto may not exit after finishing, so we don't wait for exit.
-        if has_new_commits {
-            let diff = get_git_diff_stat(&work_dir);
-            info!(task_id, worker_id, "codex produced commits — task complete");
-
-            {
-                let mut store = state.lock().unwrap();
-                if let Some(task) = store.get_task_mut(&task_id) {
-                    task.output = Some(TaskOutput {
-                        files_changed: vec![],
-                        tests_passed: false,
-                        diff_summary: diff,
-                        stdout: String::new(),
-                    });
-                    let _ = task.transition_to(TaskState::Done);
-                    let _ = task.transition_to(TaskState::Review);
-                }
-                if let Some(w) = store.get_worker_mut(&worker_id) {
-                    w.status = WorkerStatus::Dead;
-                    w.current_task_id = None;
-                }
-                let _ = store.save();
-                let _ = store.log_event(
-                    "task_completed",
-                    json!({ "task_id": task_id, "worker_id": worker_id }),
-                );
-            } // release lock before await
-
-            // Gracefully exit codex and close the terminal pane.
-            if let Some(ref pid) = pane_id {
-                graceful_exit_codex(pid).await;
+        // Try to find the session log if we haven't yet.
+        if session_log.is_none() {
+            session_log = find_session_log(&work_dir, launch_time);
+            if let Some(ref path) = session_log {
+                info!(task_id, log = %path.display(), "found codex session log");
+            } else if start.elapsed().as_secs() < 30 {
+                // Session log not yet available — codex may still be starting.
+                continue;
             }
-            break;
         }
 
-        // Case 2: Codex exited without producing commits.
-        if !codex_running {
-            info!(task_id, worker_id, "codex exited without commits");
+        // Read new events from the session log.
+        if let Some(ref log_path) = session_log {
+            let (events, new_offset) = read_session_events(log_path, log_offset);
+            log_offset = new_offset;
 
+            for event in &events {
+                match event {
+                    SessionEvent::Done(output) => {
+                        info!(task_id, worker_id, "codex reported done via log");
+                        {
+                            let mut store = state.lock().unwrap();
+                            if let Some(task) = store.get_task_mut(&task_id) {
+                                task.output = Some(output.clone());
+                                let _ = task.transition_to(TaskState::Done);
+                                let _ = task.transition_to(TaskState::Review);
+                            }
+                            mark_worker_dead(&mut store, &worker_id);
+                            let _ = store.save();
+                            let _ = store.log_event(
+                                "task_completed",
+                                json!({
+                                    "task_id": task_id,
+                                    "worker_id": worker_id,
+                                    "source": "session_log",
+                                }),
+                            );
+                        }
+                        notify_escalation(
+                            &terminal,
+                            &origin_terminal_id,
+                            &task_id,
+                            "Task completed, ready for review",
+                        )
+                        .await;
+                        if let Some(ref pid) = pane_id {
+                            graceful_exit_codex(&terminal, pid).await;
+                        }
+                        return;
+                    }
+                    SessionEvent::SessionComplete(msg) => {
+                        info!(task_id, worker_id, "codex session complete");
+                        {
+                            let mut store = state.lock().unwrap();
+                            if let Some(task) = store.get_task_mut(&task_id) {
+                                // Parse the last message for output if possible.
+                                let output = parse_done_from_message(msg);
+                                task.output = Some(output);
+                                let _ = task.transition_to(TaskState::Done);
+                                let _ = task.transition_to(TaskState::Review);
+                            }
+                            mark_worker_dead(&mut store, &worker_id);
+                            let _ = store.save();
+                            let _ = store.log_event(
+                                "task_completed",
+                                json!({
+                                    "task_id": task_id,
+                                    "worker_id": worker_id,
+                                    "source": "session_complete",
+                                }),
+                            );
+                        }
+                        notify_escalation(
+                            &terminal,
+                            &origin_terminal_id,
+                            &task_id,
+                            "Task completed, ready for review",
+                        )
+                        .await;
+                        if let Some(ref pid) = pane_id {
+                            graceful_exit_codex(&terminal, pid).await;
+                        }
+                        return;
+                    }
+                    SessionEvent::Escalate(summary) => {
+                        info!(task_id, worker_id, "codex escalation via log");
+                        let escalation_id = format!("esc-worker-{}", task_id);
+                        {
+                            let mut store = state.lock().unwrap();
+                            if let Some(task) = store.get_task_mut(&task_id) {
+                                let _ = task.transition_to(TaskState::Blocked);
+                                task.escalation_id = Some(escalation_id.clone());
+                            }
+                            store.add_escalation(EscalationRequest {
+                                id: escalation_id,
+                                task_id: task_id.clone(),
+                                worker_id: worker_id.clone(),
+                                category: EscalationCategory::ImplementationChoice,
+                                summary: summary.clone(),
+                                options: vec![],
+                                context: EscalationContext::default(),
+                            });
+                            let _ = store.save();
+                        }
+                        notify_escalation(&terminal, &origin_terminal_id, &task_id, summary).await;
+                        return;
+                    }
+                    SessionEvent::Blocked(reason) => {
+                        info!(task_id, worker_id, "codex blocked via log");
+                        let escalation_id = format!("esc-blocked-{}", task_id);
+                        {
+                            let mut store = state.lock().unwrap();
+                            if let Some(task) = store.get_task_mut(&task_id) {
+                                let _ = task.transition_to(TaskState::Blocked);
+                                task.escalation_id = Some(escalation_id.clone());
+                            }
+                            store.add_escalation(EscalationRequest {
+                                id: escalation_id,
+                                task_id: task_id.clone(),
+                                worker_id: worker_id.clone(),
+                                category: EscalationCategory::Conflict,
+                                summary: reason.clone(),
+                                options: vec![],
+                                context: EscalationContext::default(),
+                            });
+                            let _ = store.save();
+                        }
+                        notify_escalation(&terminal, &origin_terminal_id, &task_id, reason).await;
+                        return;
+                    }
+                    SessionEvent::Progress(msg) => {
+                        info!(task_id, worker_id, progress = %msg, "codex progress");
+                    }
+                    SessionEvent::ApprovalNeeded(msg) => {
+                        // Route through escalation system:
+                        // - Worktree tasks: auto-approve (worktree isolation = safe)
+                        // - Same-dir tasks: escalate to CC
+                        let is_worktree =
+                            matches!(decision, IsolationDecision::Worktree { .. });
+                        if is_worktree {
+                            info!(task_id, worker_id, "auto-approving (worktree isolated)");
+                            if let Some(ref pid) = pane_id {
+                                let _ = terminal.send_text(pid, "y").await;
+                            }
+                            let _ = state.lock().unwrap().log_event(
+                                "approval_auto",
+                                json!({
+                                    "task_id": task_id,
+                                    "worker_id": worker_id,
+                                    "reason": "worktree_isolated",
+                                }),
+                            );
+                        } else {
+                            info!(task_id, worker_id, "sandbox approval needed, escalating");
+                            let esc_id = format!("esc-approval-{}", task_id);
+                            {
+                                let mut store = state.lock().unwrap();
+                                store.add_escalation(EscalationRequest {
+                                    id: esc_id.clone(),
+                                    task_id: task_id.clone(),
+                                    worker_id: worker_id.clone(),
+                                    category: EscalationCategory::ImplementationChoice,
+                                    summary: format!(
+                                        "Codex needs sandbox approval: {}",
+                                        msg.chars().take(200).collect::<String>()
+                                    ),
+                                    options: vec![
+                                        EscalationOption {
+                                            id: "approve".into(),
+                                            desc: "Approve the operation".into(),
+                                        },
+                                        EscalationOption {
+                                            id: "reject".into(),
+                                            desc: "Reject and skip".into(),
+                                        },
+                                    ],
+                                    context: EscalationContext::default(),
+                                });
+                                let _ = store.save();
+                            }
+                            notify_escalation(
+                                &terminal,
+                                &origin_terminal_id,
+                                &task_id,
+                                "Codex needs sandbox approval",
+                            )
+                            .await;
+                            // Don't return — keep monitoring. CC will decide
+                            // via orca_decide, and the next monitor tick will
+                            // check if the escalation was resolved.
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: codex exited without session log events.
+        if !is_codex_active(&session_log, &work_dir) {
+            // Grace period: wait for session log to flush before giving up.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            // Try to find the session log one more time if we haven't yet.
+            if session_log.is_none() {
+                session_log = find_session_log(&work_dir, launch_time);
+            }
+
+            // Final read of session log.
+            if let Some(ref log_path) = session_log {
+                let (events, _) = read_session_events(log_path, log_offset);
+                for event in &events {
+                    if matches!(
+                        event,
+                        SessionEvent::Done(_) | SessionEvent::SessionComplete(_)
+                    ) {
+                        let output = match event {
+                            SessionEvent::Done(o) => o.clone(),
+                            SessionEvent::SessionComplete(msg) => parse_done_from_message(msg),
+                            _ => unreachable!(),
+                        };
+                        info!(task_id, worker_id, "codex completed (final log read)");
+                        {
+                            let mut store = state.lock().unwrap();
+                            if let Some(task) = store.get_task_mut(&task_id) {
+                                task.output = Some(output);
+                                let _ = task.transition_to(TaskState::Done);
+                                let _ = task.transition_to(TaskState::Review);
+                            }
+                            mark_worker_dead(&mut store, &worker_id);
+                            let _ = store.save();
+                        }
+                        notify_escalation(
+                            &terminal,
+                            &origin_terminal_id,
+                            &task_id,
+                            "Task completed, ready for review",
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
+
+            info!(task_id, worker_id, "codex exited without completion signal");
             let escalation_id = format!("esc-exit-{}", task_id);
-            let mut store = state.lock().unwrap();
-            if let Some(task) = store.get_task_mut(&task_id) {
-                let _ = task.transition_to(TaskState::Blocked);
-                task.escalation_id = Some(escalation_id.clone());
-            }
-            if let Some(w) = store.get_worker_mut(&worker_id) {
-                w.status = WorkerStatus::Dead;
-                w.current_task_id = None;
-            }
-            store.add_escalation(EscalationRequest {
-                id: escalation_id,
-                task_id: task_id.clone(),
-                worker_id: worker_id.clone(),
-                category: EscalationCategory::Timeout,
-                summary: "Codex exited without producing any changes".to_string(),
-                options: vec![],
-                context: EscalationContext::default(),
-            });
-            let _ = store.save();
-            let _ = store.log_event(
-                "task_blocked",
-                json!({ "task_id": task_id, "worker_id": worker_id, "reason": "no_changes" }),
-            );
-            break;
-        }
-
-        // Case 3: Timeout.
-        if start.elapsed().as_secs() > timeout_secs {
-            info!(task_id, worker_id, "task timed out after {}s", timeout_secs);
-
             {
-                let escalation_id = format!("esc-timeout-{}", task_id);
                 let mut store = state.lock().unwrap();
                 if let Some(task) = store.get_task_mut(&task_id) {
                     let _ = task.transition_to(TaskState::Blocked);
                     task.escalation_id = Some(escalation_id.clone());
                 }
-                if let Some(w) = store.get_worker_mut(&worker_id) {
-                    w.status = WorkerStatus::Dead;
-                    w.current_task_id = None;
+                mark_worker_dead(&mut store, &worker_id);
+                store.add_escalation(EscalationRequest {
+                    id: escalation_id,
+                    task_id: task_id.clone(),
+                    worker_id: worker_id.clone(),
+                    category: EscalationCategory::Timeout,
+                    summary: "Codex exited without completion signal".to_string(),
+                    options: vec![],
+                    context: EscalationContext::default(),
+                });
+                let _ = store.save();
+                let _ = store.log_event(
+                    "task_blocked",
+                    json!({
+                        "task_id": task_id,
+                        "worker_id": worker_id,
+                        "reason": "exit_no_signal",
+                    }),
+                );
+            }
+            notify_escalation(
+                &terminal,
+                &origin_terminal_id,
+                &task_id,
+                "Codex exited without completion",
+            )
+            .await;
+            return;
+        }
+
+        // Timeout check.
+        if start.elapsed().as_secs() > timeout_secs {
+            info!(task_id, worker_id, "task timed out after {}s", timeout_secs);
+            let escalation_id = format!("esc-timeout-{}", task_id);
+            {
+                let mut store = state.lock().unwrap();
+                if let Some(task) = store.get_task_mut(&task_id) {
+                    let _ = task.transition_to(TaskState::Blocked);
+                    task.escalation_id = Some(escalation_id.clone());
                 }
+                mark_worker_dead(&mut store, &worker_id);
                 store.add_escalation(EscalationRequest {
                     id: escalation_id,
                     task_id: task_id.clone(),
@@ -545,14 +951,42 @@ async fn monitor_task_completion(p: MonitorParams) {
                     "task_timeout",
                     json!({ "task_id": task_id, "worker_id": worker_id }),
                 );
-            } // release lock before await
-
-            // Gracefully exit the timed-out codex process.
-            if let Some(ref pid) = pane_id {
-                graceful_exit_codex(pid).await;
             }
-            break;
+            notify_escalation(
+                &terminal,
+                &origin_terminal_id,
+                &task_id,
+                &format!("Task timed out after {}s", timeout_secs),
+            )
+            .await;
+            if let Some(ref pid) = pane_id {
+                graceful_exit_codex(&terminal, pid).await;
+            }
+            return;
         }
+    }
+}
+
+/// Mark a worker as dead and unassign its task.
+fn mark_worker_dead(store: &mut StateStore, worker_id: &str) {
+    if let Some(w) = store.get_worker_mut(worker_id) {
+        w.status = WorkerStatus::Dead;
+        w.current_task_id = None;
+    }
+}
+
+/// Try to parse a `[ORCA:DONE]` marker from a message string.
+/// Falls back to an empty TaskOutput if no marker is found.
+fn parse_done_from_message(msg: &str) -> TaskOutput {
+    let parsed = crate::worker::codex::parse_worker_line(msg);
+    match parsed {
+        crate::worker::WorkerMessage::Done(output) => output,
+        _ => TaskOutput {
+            files_changed: vec![],
+            tests_passed: false,
+            diff_summary: String::new(),
+            stdout: msg.to_string(),
+        },
     }
 }
 
@@ -637,6 +1071,9 @@ mod tests {
             Ok(())
         }
         async fn focus_pane(&self, _pane_id: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn send_text(&self, _pane_id: &str, _text: &str) -> Result<()> {
             Ok(())
         }
         fn name(&self) -> &str {

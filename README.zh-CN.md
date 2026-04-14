@@ -15,22 +15,23 @@ Orca 让 Claude Code (CC) 充当大脑 —— 负责规划、审查和决策 —
 - Daemon + Unix Socket IPC（启动/停止/PID 管理）
 - 任务生命周期：plan 提交 → DAG 调度 → worker 分派 → review
 - 智能隔离：基于文件重叠自动选择 worktree 或串行
-- 三级提权路由 + 可配置规则
+- 三级提权路由 + 可配置规则 + 主动通知
 - MCP Server（8 个 tools，CC 集成）
-- CLI（11 个子命令）
+- CLI（12 个子命令，包含 `worker run`）
 - 状态持久化（state.json + append-only ledger）
+- 终端分屏：Ghostty (AppleScript)、iTerm2、手动兜底
+- 基于日志的完成检测（读取 codex session log）
+- 提权通知：聚焦 CC 终端 + macOS 系统通知
 - 92 个测试通过，clippy clean
 
 ### 进行中
 
-- **终端集成**：Worker 需要在可见的终端分屏中运行，用户实时观察 Codex 工作。这需要终端支持可编程分屏 —— 见[终端支持](#终端支持)。
 - **Ghostty CLI API**：计划给 [Ghostty](https://github.com/ghostty-org/ghostty) 提 PR 增加 `ghostty +action new_split -- <command>` 支持。见 [ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353)。
 
 ### 未完成
 
 - 端到端 Codex 工作流实测
-- CC→daemon 提权反馈闭环
-- `orca worker run <task-id>` 手动 pane 执行命令
+- WezTerm / kitty / Zellij adapter 实现
 
 ## 为什么做 Orca？
 
@@ -62,7 +63,7 @@ Orca 让 Claude Code (CC) 充当大脑 —— 负责规划、审查和决策 —
   终端分屏（用户实时观察）
 ```
 
-Worker 在**用户可见的终端分屏**中运行，不是隐藏子进程。用户实时看到 Codex 工作。任务完成通过检查 git 状态判断。
+Worker 在**用户可见的终端分屏**中运行，不是隐藏子进程。用户实时看到 Codex 工作。任务完成通过读取 Codex session log（`~/.codex/sessions/`）中的结构化标记（`[ORCA:DONE]`、`task_complete` 事件等）检测。
 
 ## 终端支持
 
@@ -80,6 +81,10 @@ Orca 需要终端支持**可编程分屏** —— 从外部进程创建新的 sp
 **Ghostty 用户**：Ghostty 内部有 `new_split` action 但没有外部 API。我们计划给 Ghostty 贡献这个功能。在此之前，orca 会打印命令供你手动在 Ghostty 分屏中执行。
 
 ## 三级提权
+
+当发生提权时，daemon 会主动通知主 agent：
+- 聚焦 CC 的终端窗格
+- 发送 macOS 系统通知，显示提权摘要
 
 ```
 Worker 遇到问题
@@ -116,10 +121,11 @@ cd orca && cargo build --release
 
 - [ ] Ghostty CLI API PR（[ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353)）
 - [ ] WezTerm / kitty adapter 实现
-- [ ] `orca worker run <task-id>` 手动 pane 执行
 - [ ] 端到端 Codex 工作流实测
-- [ ] CC 提权反馈闭环
 - [ ] Zellij adapter
+- [x] ~~`orca worker run <task-id>` 手动 pane 执行~~
+- [x] ~~CC 提权反馈闭环~~
+- [x] ~~基于日志的完成检测~~
 
 ## 技术栈
 

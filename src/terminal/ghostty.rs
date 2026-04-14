@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -6,9 +6,10 @@ use async_trait::async_trait;
 use super::Terminal;
 use crate::config::TerminalConfig;
 
-/// Whether the first worker pane has been created (splits right).
-/// Subsequent panes split down to stack in the worker column.
-static FIRST_SPLIT_DONE: AtomicBool = AtomicBool::new(false);
+/// Tracks the most recently created worker pane.
+/// First split goes right from origin (creating the worker column).
+/// Subsequent splits go down from the last worker pane (stacking in column).
+static LAST_WORKER_PANE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Terminal adapter for Ghostty 1.3+ on macOS.
 ///
@@ -68,28 +69,31 @@ impl GhosttyTerminal {
 #[async_trait]
 impl Terminal for GhosttyTerminal {
     async fn create_pane(&self, cmd: &str, label: &str) -> Result<String> {
-        // Use the origin terminal (captured at startup) as the split target.
-        let parent_id = if self.origin_terminal_id.is_empty() {
-            // Fallback: try to get current focused terminal.
-            get_focused_terminal().await?
-        } else {
-            self.origin_terminal_id.clone()
-        };
-
-        // First worker splits right (creates worker column),
-        // subsequent workers split down (stack in the column).
-        let direction = if FIRST_SPLIT_DONE
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            "right"
-        } else {
-            "down"
+        // Decide split target and direction:
+        // - First worker: split RIGHT from origin (creates worker column)
+        // - Subsequent workers: split DOWN from last worker pane (stack in column)
+        let last_pane = LAST_WORKER_PANE.lock().unwrap().clone();
+        let (parent_id, direction) = match last_pane {
+            Some(last) => (last, "down"),
+            None => {
+                let origin = if self.origin_terminal_id.is_empty() {
+                    get_focused_terminal().await?
+                } else {
+                    self.origin_terminal_id.clone()
+                };
+                (origin, "right")
+            }
         };
 
         let new_id = split_terminal(&parent_id, direction)
             .await
             .with_context(|| format!("failed to split ghostty terminal {direction}"))?;
+
+        // Track this pane so the next worker splits down from it.
+        {
+            let mut last = LAST_WORKER_PANE.lock().unwrap();
+            *last = Some(new_id.clone());
+        }
 
         tracing::info!(
             pane_id = %new_id,
@@ -110,8 +114,11 @@ impl Terminal for GhosttyTerminal {
     }
 
     async fn focus_pane(&self, pane_id: &str) -> Result<()> {
-        tracing::info!(pane_id = %pane_id, "ghostty: use Cmd+[ / Cmd+] to navigate splits");
-        Ok(())
+        focus_terminal(pane_id).await
+    }
+
+    async fn send_text(&self, pane_id: &str, text: &str) -> Result<()> {
+        input_text(pane_id, text).await
     }
 
     fn name(&self) -> &str {
@@ -145,6 +152,18 @@ async fn input_text(terminal_id: &str, text: &str) -> Result<()> {
     let script = format!(
         r#"tell application "Ghostty" to input text "{}" to terminal id "{}""#,
         escaped, terminal_id
+    );
+    run_osascript(&script).await?;
+    Ok(())
+}
+
+async fn focus_terminal(terminal_id: &str) -> Result<()> {
+    let script = format!(
+        r#"tell application "Ghostty"
+    activate
+    set focused of terminal id "{}" to true
+end tell"#,
+        terminal_id
     );
     run_osascript(&script).await?;
     Ok(())

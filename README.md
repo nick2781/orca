@@ -15,22 +15,23 @@ Orca lets Claude Code (CC) act as the brain — planning, reviewing, and making 
 - Daemon with Unix socket IPC (start/stop/status, PID management)
 - Task lifecycle: plan submission → DAG scheduling → worker dispatch → review
 - Smart isolation: worktree vs serial based on file overlap
-- 3-level escalation routing with configurable rules
+- 3-level escalation routing with configurable rules and active notification
 - MCP server for Claude Code integration (8 tools)
-- CLI with 11 subcommands
+- CLI with 12 subcommands (including `worker run`)
 - State persistence (state.json + append-only ledger)
+- Terminal split panes: Ghostty (AppleScript), iTerm2, manual fallback
+- Log-based completion detection via codex session logs
+- Escalation notification: focus CC terminal + macOS notification
 - 92 tests passing, clippy clean
 
 ### What's in progress
 
-- **Terminal integration**: Workers need to run in visible terminal panes so users can watch Codex work in real time. This requires the terminal to support programmatic split-pane creation — see [Terminal Support](#terminal-support) below.
 - **Ghostty CLI API**: We are planning to contribute a PR to [Ghostty](https://github.com/ghostty-org/ghostty) to add `ghostty +action new_split -- <command>` support. See [ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353).
 
 ### What's not done yet
 
 - End-to-end tested workflow with real Codex
-- CC-to-daemon escalation feedback loop
-- `orca worker run <task-id>` CLI for manual pane execution
+- WezTerm / kitty / Zellij adapter implementations
 
 ## Why Orca?
 
@@ -63,7 +64,7 @@ Orca lets Claude Code (CC) act as the brain — planning, reviewing, and making 
   Terminal split panes (user watches in real time)
 ```
 
-Workers run in **user-visible terminal split panes**, not as hidden subprocesses. The user sees Codex working in real time. Task completion is detected by inspecting git state after the worker exits.
+Workers run in **user-visible terminal split panes**, not as hidden subprocesses. The user sees Codex working in real time. Task completion is detected by reading Codex session logs (`~/.codex/sessions/`) for structured markers (`[ORCA:DONE]`, `[ORCA:ESCALATE]`, etc.) and `task_complete` events.
 
 ### Three layers
 
@@ -89,6 +90,10 @@ Orca needs terminals that support **programmatic split-pane creation** — the a
 **Ghostty users**: Ghostty's internal `new_split` action exists but has no external API. We plan to contribute this to Ghostty. In the meantime, orca prints the command for you to manually run in a Ghostty split pane.
 
 ## 3-Level Escalation
+
+When an escalation is created, the daemon actively notifies the main agent:
+- Focuses CC's terminal pane (brings it to front)
+- Sends a macOS notification with the escalation summary
 
 ```
 Worker encounters a problem
@@ -162,7 +167,7 @@ The `orca plan submit` CLI command is available for testing and debugging.
 ```bash
 orca daemon start|stop|status
 orca task list|detail|cancel|retry
-orca worker list|connect|kill
+orca worker list|connect|kill|run <task-id>
 orca plan submit <file.json>
 orca review accept|reject <task-id>
 orca merge <task-ids...>
@@ -209,10 +214,11 @@ trait Worker: Send + Sync {
 
 - [ ] Ghostty CLI API PR ([ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353))
 - [ ] WezTerm / kitty adapter implementation
-- [ ] `orca worker run <task-id>` for manual pane execution
 - [ ] End-to-end tested Codex workflow
-- [ ] CC escalation feedback loop
 - [ ] Zellij adapter
+- [x] ~~`orca worker run <task-id>` for manual pane execution~~
+- [x] ~~CC escalation feedback loop~~
+- [x] ~~Log-based completion detection~~
 
 ## Tech Stack
 

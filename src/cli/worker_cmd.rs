@@ -22,4 +22,10 @@ pub enum WorkerAction {
         /// Worker ID
         id: String,
     },
+
+    /// Print the command to manually run a worker for a task
+    Run {
+        /// Task ID
+        id: String,
+    },
 }

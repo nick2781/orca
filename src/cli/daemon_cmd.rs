@@ -8,6 +8,11 @@ pub enum DaemonAction {
         /// Run in foreground instead of daemonizing
         #[arg(long)]
         foreground: bool,
+
+        /// Origin terminal UUID for split pane targeting.
+        /// When set, splits always happen in this terminal's window.
+        #[arg(long)]
+        origin_terminal: Option<String>,
     },
 
     /// Stop the running daemon

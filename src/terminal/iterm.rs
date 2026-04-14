@@ -43,6 +43,10 @@ end tell"#
         Ok(())
     }
 
+    async fn send_text(&self, _pane_id: &str, _text: &str) -> Result<()> {
+        Ok(())
+    }
+
     fn name(&self) -> &str {
         "iterm2"
     }

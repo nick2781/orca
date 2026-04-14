@@ -21,6 +21,9 @@ pub trait Terminal: Send + Sync {
     /// Bring focus to a specific pane.
     async fn focus_pane(&self, pane_id: &str) -> Result<()>;
 
+    /// Send text/keystrokes to a specific pane without changing focus.
+    async fn send_text(&self, pane_id: &str, text: &str) -> Result<()>;
+
     /// Return the name of this terminal provider.
     fn name(&self) -> &str;
 }

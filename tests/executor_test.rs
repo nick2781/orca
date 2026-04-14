@@ -72,6 +72,9 @@ impl Terminal for MockTerminal {
     async fn focus_pane(&self, _pane_id: &str) -> Result<()> {
         Ok(())
     }
+    async fn send_text(&self, _pane_id: &str, _text: &str) -> Result<()> {
+        Ok(())
+    }
     fn name(&self) -> &str {
         "mock"
     }
