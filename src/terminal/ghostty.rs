@@ -15,9 +15,7 @@ static FIRST_SPLIT_DONE: AtomicBool = AtomicBool::new(false);
 /// Uses Ghostty's native AppleScript scripting API to create split panes
 /// and send commands — no keystroke simulation, no clipboard hacks.
 ///
-/// Inspired by [gx-ghostty](https://github.com/ashsidhu/gx-ghostty) which
-/// demonstrated that Ghostty 1.3+ exposes a proper scripting dictionary
-/// with `split`, `input text`, `send key`, and UUID-based terminal addressing.
+/// Inspired by [gx-ghostty](https://github.com/ashsidhu/gx-ghostty).
 ///
 /// Layout:
 /// ```text
@@ -25,20 +23,33 @@ static FIRST_SPLIT_DONE: AtomicBool = AtomicBool::new(false);
 /// │          │ Worker 1 │
 /// │   CC     ├──────────┤
 /// │ (main)   │ Worker 2 │
-/// │          ├──────────┤
-/// │          │ Worker 3 │
 /// └──────────┴──────────┘
 /// ```
-/// First worker splits right (creates worker column).
-/// Subsequent workers split down (stack in the column).
 pub struct GhosttyTerminal {
     _config: TerminalConfig,
+    /// The terminal UUID where CC (main agent) is running.
+    /// Captured at construction time so splits always happen in the
+    /// correct window, even when the daemon runs in the background.
+    origin_terminal_id: String,
 }
 
 impl GhosttyTerminal {
     pub fn new(config: &TerminalConfig) -> Self {
+        // Capture the focused terminal NOW (at daemon startup time,
+        // while the user's Ghostty window is still in front).
+        let origin_id = tokio::runtime::Handle::current()
+            .block_on(get_focused_terminal())
+            .unwrap_or_default();
+
+        if origin_id.is_empty() {
+            tracing::warn!("could not capture Ghostty terminal UUID at startup — splits may go to wrong window");
+        } else {
+            tracing::info!(terminal_id = %origin_id, "captured origin Ghostty terminal");
+        }
+
         Self {
             _config: config.clone(),
+            origin_terminal_id: origin_id,
         }
     }
 }
@@ -46,12 +57,16 @@ impl GhosttyTerminal {
 #[async_trait]
 impl Terminal for GhosttyTerminal {
     async fn create_pane(&self, cmd: &str, label: &str) -> Result<String> {
-        // Get the currently focused terminal UUID.
-        let focused_id = get_focused_terminal()
-            .await
-            .context("failed to get focused Ghostty terminal")?;
+        // Use the origin terminal (captured at startup) as the split target.
+        let parent_id = if self.origin_terminal_id.is_empty() {
+            // Fallback: try to get current focused terminal.
+            get_focused_terminal().await?
+        } else {
+            self.origin_terminal_id.clone()
+        };
 
-        // Decide split direction: first worker goes right, rest go down.
+        // First worker splits right (creates worker column),
+        // subsequent workers split down (stack in the column).
         let direction = if FIRST_SPLIT_DONE
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
@@ -61,8 +76,7 @@ impl Terminal for GhosttyTerminal {
             "down"
         };
 
-        // Split and get the new terminal's UUID.
-        let new_id = split_terminal(&focused_id, direction)
+        let new_id = split_terminal(&parent_id, direction)
             .await
             .with_context(|| format!("failed to split ghostty terminal {direction}"))?;
 
@@ -73,7 +87,7 @@ impl Terminal for GhosttyTerminal {
             "created ghostty split pane"
         );
 
-        // Send the command + newline to the new pane (by UUID, no focus required).
+        // Send command + newline to the new pane (by UUID, no focus change).
         let cmd_with_newline = format!("{}\n", cmd);
         input_text(&new_id, &cmd_with_newline).await?;
 
@@ -85,8 +99,6 @@ impl Terminal for GhosttyTerminal {
     }
 
     async fn focus_pane(&self, pane_id: &str) -> Result<()> {
-        // Ghostty scripting API doesn't have a direct "focus terminal" command.
-        // The user can navigate splits with Cmd+[ / Cmd+].
         tracing::info!(pane_id = %pane_id, "ghostty: use Cmd+[ / Cmd+] to navigate splits");
         Ok(())
     }
@@ -97,19 +109,15 @@ impl Terminal for GhosttyTerminal {
 }
 
 // ---------------------------------------------------------------------------
-// Ghostty AppleScript helpers
-//
-// These use Ghostty 1.3+'s native scripting dictionary.
+// Ghostty AppleScript helpers (1.3+ scripting dictionary)
 // Reference: https://github.com/ashsidhu/gx-ghostty
 // ---------------------------------------------------------------------------
 
-/// Get the UUID of the currently focused terminal.
 async fn get_focused_terminal() -> Result<String> {
     let script = r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#;
     run_osascript(script).await
 }
 
-/// Split a terminal and return the new terminal's UUID.
 async fn split_terminal(terminal_id: &str, direction: &str) -> Result<String> {
     let script = format!(
         r#"tell application "Ghostty"
@@ -121,7 +129,6 @@ end tell"#,
     run_osascript(&script).await
 }
 
-/// Send text to a specific terminal (by UUID, no focus change).
 async fn input_text(terminal_id: &str, text: &str) -> Result<()> {
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(
@@ -132,7 +139,6 @@ async fn input_text(terminal_id: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
-/// Close a terminal pane.
 async fn close_terminal(terminal_id: &str) -> Result<()> {
     let script = format!(
         r#"tell application "Ghostty" to close terminal id "{}""#,
@@ -142,7 +148,6 @@ async fn close_terminal(terminal_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Execute AppleScript and return trimmed stdout.
 async fn run_osascript(script: &str) -> Result<String> {
     let output = tokio::process::Command::new("osascript")
         .args(["-e", script])
