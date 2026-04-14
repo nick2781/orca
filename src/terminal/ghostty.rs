@@ -124,19 +124,6 @@ impl Terminal for GhosttyTerminal {
 // Reference: https://github.com/ashsidhu/gx-ghostty
 // ---------------------------------------------------------------------------
 
-/// Synchronous version for use during construction (outside tokio runtime).
-fn get_focused_terminal_sync() -> Result<String> {
-    let script = r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#;
-    let output = std::process::Command::new("osascript")
-        .args(["-e", script])
-        .output()
-        .context("failed to run osascript")?;
-    if !output.status.success() {
-        anyhow::bail!("Ghostty AppleScript failed");
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 async fn get_focused_terminal() -> Result<String> {
     let script = r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#;
     run_osascript(script).await
