@@ -1,76 +1,54 @@
 # Orca
 
-> **WARNING: This is an experimental project under active development. NOT ready for production use.** Core architecture is implemented but not yet battle-tested. Use at your own risk.
+> **This is an experimental project under active development. NOT ready for production use.**
 
 Multi-agent orchestrator: Claude Code brain + Codex workers.
 
 [中文](README.zh-CN.md) | English
 
-Orca lets Claude Code (CC) act as the brain -- planning, reviewing, and making decisions -- while dispatching implementation tasks to multiple Codex workers running in parallel. A lightweight daemon coordinates everything through structured messages, no terminal buffer parsing required.
+Orca lets Claude Code (CC) act as the brain — planning, reviewing, and making decisions — while dispatching implementation tasks to multiple Codex workers running in parallel. A lightweight daemon coordinates everything through structured messaging over Unix sockets.
+
+## Status
+
+### What works
+
+- Daemon with Unix socket IPC (start/stop/status, PID management)
+- Task lifecycle: plan submission → DAG scheduling → worker dispatch → review
+- Smart isolation: worktree vs serial based on file overlap
+- 3-level escalation routing with configurable rules
+- MCP server for Claude Code integration (8 tools)
+- CLI with 11 subcommands
+- State persistence (state.json + append-only ledger)
+- 92 tests passing, clippy clean
+
+### What's in progress
+
+- **Terminal integration**: Workers need to run in visible terminal panes so users can watch Codex work in real time. This requires the terminal to support programmatic split-pane creation — see [Terminal Support](#terminal-support) below.
+- **Ghostty CLI API**: We are planning to contribute a PR to [Ghostty](https://github.com/ghostty-org/ghostty) to add `ghostty +action new_split -- <command>` support. See [ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353).
+
+### What's not done yet
+
+- End-to-end tested workflow with real Codex
+- CC-to-daemon escalation feedback loop
+- `orca worker run <task-id>` CLI for manual pane execution
 
 ## Why Orca?
 
-The current AI coding agent ecosystem has a core tension:
-
-- **Claude Code**: excellent analysis and reasoning, but weaker at code details
-- **Codex**: solid code generation, but verbose output and poor business context
-
-Existing tools (oh-my-claudecode, claude-squad, CCCC, etc.) fall short:
-
 | Problem | Orca's Approach |
 |---------|-----------------|
-| Nearly every tool depends on tmux | Native terminal support (Ghostty, iTerm2, any terminal) |
+| Nearly every tool depends on tmux | Terminal adapter layer (supports terminals with split APIs) |
 | No CC-to-Codex orchestration | CC as brain, Codex as workers, daemon as middle layer |
-| All-or-nothing permissions | 3-level escalation: worker auto-fix -> CC decides -> user confirms |
-| Communication via terminal buffer text parsing | Structured JSON-RPC over Unix Socket |
-
-## Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
-```
-
-Or build from source:
-
-```bash
-cargo install --path .
-```
-
-## Quick Start
-
-```bash
-# Initialize in your project
-cd my-project
-orca init
-
-# Set up Claude Code MCP integration
-orca setup mcp
-
-# Start the daemon
-orca daemon start
-```
-
-Once running, orca MCP tools are automatically available inside Claude Code:
-
-| MCP Tool | Description |
-|----------|-------------|
-| `orca_plan` | Submit an execution plan (tasks + dependency graph) |
-| `orca_status` | View global status and pending escalation requests |
-| `orca_task_detail` | View details for a single task |
-| `orca_decide` | Respond to a worker's escalation request |
-| `orca_review` | Review a completed task (accept / reject) |
-| `orca_cancel` | Cancel a task |
-| `orca_worker_list` | View worker status |
-| `orca_merge` | Merge branches that passed review |
+| All-or-nothing permissions | 3-level escalation: worker → CC auto → user |
+| Communication via terminal buffer parsing | Structured JSON-RPC over Unix Socket |
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────┐
 │  CC (Claude Code) — Brain                    │
-│  Planning, review, hard decisions, user talk │
+│  Planning, review, hard decisions            │
 └──────────────────┬───────────────────────────┘
-                   │ MCP (stdio -> Unix Socket)
+                   │ MCP (stdio → Unix Socket)
                    ▼
 ┌──────────────────────────────────────────────┐
 │  orcad (daemon) — Orchestration layer        │
@@ -82,36 +60,47 @@ Once running, orca MCP tools are automatically available inside Claude Code:
   │ Worker 1│   │ Worker 2│   │ Worker 3│
   │ (Codex) │   │ (Codex) │   │ (Codex) │
   └─────────┘   └─────────┘   └─────────┘
-  Terminal panes (Ghostty / iTerm2 / any)
+  Terminal split panes (user watches in real time)
 ```
 
-### Three-Layer Responsibilities
+Workers run in **user-visible terminal split panes**, not as hidden subprocesses. The user sees Codex working in real time. Task completion is detected by inspecting git state after the worker exits.
 
-| Layer | Component | Responsibilities | Does NOT do |
-|-------|-----------|-----------------|-------------|
-| Brain | CC (Claude Code) | Plan decomposition, code review, design decisions, user interaction | Write code directly |
-| Orchestration | orcad (daemon) | Task scheduling, isolation decisions, escalation routing, worker lifecycle, state persistence | LLM inference |
-| Execution | Worker (Codex) | Code implementation, tests, git operations | Architecture decisions |
+### Three layers
+
+| Layer | Component | Does | Does NOT |
+|-------|-----------|------|----------|
+| Brain | CC | Plan, review, decide | Write code |
+| Orchestration | orcad | Schedule, route escalations, manage state | LLM inference |
+| Execution | Worker (Codex) | Implement, test, git ops | Architecture decisions |
+
+## Terminal Support
+
+Orca needs terminals that support **programmatic split-pane creation** — the ability to create a new split pane and run a command in it from an external process.
+
+| Terminal | Split API | Status |
+|----------|----------|--------|
+| **WezTerm** | `wezterm cli split-pane -- cmd` | Supported |
+| **kitty** | `kitten @ launch --type=window cmd` | Supported |
+| **iTerm2** | AppleScript / Python API | Supported |
+| **Ghostty** | None (yet) | [PR planned](https://github.com/ghostty-org/ghostty/discussions/2353) |
+| **Zellij** | `zellij action new-pane -- cmd` | Planned |
+| **Any terminal** | Manual mode (user splits + runs command) | Fallback |
+
+**Ghostty users**: Ghostty's internal `new_split` action exists but has no external API. We plan to contribute this to Ghostty. In the meantime, orca prints the command for you to manually run in a Ghostty split pane.
 
 ## 3-Level Escalation
 
 ```
 Worker encounters a problem
       │
-      ▼
-Level 0: Worker self-resolves
-  Fix compile errors, retry simple test failures
+Level 0: Worker self-resolves (compile errors, simple failures)
       │ can't resolve
-      ▼
-Level 1: Daemon -> CC auto-handles
-  Design choices, timeout retries, test failure analysis
+Level 1: Daemon → CC auto-handles (design choices, timeouts)
       │ CC is unsure
-      ▼
-Level 2: CC -> User
-  Architecture changes, dangerous operations, out-of-scope work
+Level 2: CC → User (architecture changes, dangerous operations)
 ```
 
-Escalation routing is configurable:
+Configurable via `orca.toml`:
 
 ```toml
 [escalation]
@@ -122,107 +111,86 @@ cc_first = ["conflict", "scope_exceeded"]
 
 ## Smart Isolation
 
-The daemon automatically decides isolation strategy based on file overlap between tasks:
-
 | Situation | Strategy |
 |-----------|----------|
-| No file overlap with running tasks | Worktree isolation (independent branch, concurrent execution) |
-| File overlap with running tasks | Serial queue (wait for preceding task to finish) |
-| No file information available | Escalate to CC to decide whether concurrency is safe |
+| No file overlap with running tasks | Git worktree (concurrent) |
+| File overlap | Serial queue |
+| No file info | Escalate to CC |
 
-Worktrees are placed under `.agents/worktree/` to keep the project directory clean.
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/Nick2781/orca.git
+cd orca && cargo build --release
+```
+
+## Quick Start
+
+```bash
+cd my-project
+orca init                    # Creates orca.toml + .orca/
+orca setup mcp               # Prints MCP config for Claude Code
+orca daemon start             # Start the daemon
+```
+
+MCP tools available in Claude Code:
+
+| Tool | Description |
+|------|-------------|
+| `orca_plan` | Submit execution plan (tasks + dependencies) |
+| `orca_status` | View status + pending escalations |
+| `orca_task_detail` | Task details |
+| `orca_decide` | Respond to escalation |
+| `orca_review` | Accept / reject completed task |
+| `orca_cancel` | Cancel task |
+| `orca_worker_list` | Worker status |
+| `orca_merge` | Merge accepted branches |
+
+## CLI
+
+```bash
+orca daemon start|stop|status
+orca task list|detail|cancel|retry
+orca worker list|connect|kill
+orca plan submit <file.json>
+orca review accept|reject <task-id>
+orca merge <task-ids...>
+orca escalation list|decide
+orca init / setup mcp / config
+```
 
 ## Configuration
 
-Project-level `orca.toml`:
-
 ```toml
 [daemon]
-socket_path = ".orca/orca.sock"
 max_workers = 4
-log_level = "info"
 
 [terminal]
-provider = "ghostty"        # ghostty | iterm2 | manual
-layout = "tabs"
-auto_open = true
+provider = "ghostty"  # ghostty | wezterm | kitty | iterm2 | manual
 
 [worker.codex]
 command = "codex"
-args = ["--full-auto", "-q"]
+args = []             # default: interactive mode with approval prompts
 timeout_secs = 300
-max_retries = 2
 
 [isolation]
 worktree_dir = ".agents/worktree"
-default_strategy = "auto"   # auto | worktree | serial
+default_strategy = "auto"
 target_branch = "main"
-
-[escalation]
-auto_approve = ["implementation_choice"]
-always_user = ["architecture_change", "destructive_operation"]
-cc_first = ["test_failure", "timeout", "conflict"]
-```
-
-Global defaults live in `~/.orca/config.toml`; project-level config overrides global.
-
-## CLI Commands
-
-```bash
-# Daemon management
-orca daemon start|stop|status
-
-# Task management
-orca task list [--filter running|blocked|pending]
-orca task detail <id>
-orca task cancel <id>
-orca task retry <id>
-
-# Worker management
-orca worker list
-orca worker connect [--id <id>] [--auto]
-orca worker kill <id>
-
-# Plan submission
-orca plan submit <file.json>
-
-# Review
-orca review accept <task-id>
-orca review reject <task-id> [--feedback "..."]
-
-# Merge
-orca merge <task-ids...>
-orca merge --all-accepted
-
-# Escalation management
-orca escalation list
-orca escalation decide <id> --choice <value>
-
-# Setup
-orca init
-orca setup mcp
-orca config
-```
-
-## Project Structure
-
-```
-project-root/
-├── .orca/                  # daemon state (gitignored)
-│   ├── orca.sock           # Unix socket
-│   ├── state.json          # task/worker state (survives restarts)
-│   ├── ledger.jsonl        # event log (auditable)
-│   └── logs/               # daemon and worker logs
-├── .agents/                # agent workspace (gitignored)
-│   └── worktree/           # git worktree directories
-├── orca.toml               # project config (version controlled)
 ```
 
 ## Worker Extensibility
 
-The first release ships with a Codex adapter only, but the Worker trait is extensible:
+V1 ships Codex only. The `Worker` trait supports future adapters (Gemini CLI, Aider, etc.):
 
 ```rust
+#[async_trait]
 trait Worker: Send + Sync {
     async fn spawn(&self, worker_id: &str, work_dir: &str) -> Result<()>;
     async fn dispatch(&self, worker_id: &str, task: &TaskSpec) -> Result<()>;
@@ -232,31 +200,18 @@ trait Worker: Send + Sync {
 }
 ```
 
-Future adapters could support Gemini CLI, Claude Code workers, Aider, and more.
+## Roadmap
+
+- [ ] Ghostty CLI API PR ([ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353))
+- [ ] WezTerm / kitty adapter implementation
+- [ ] `orca worker run <task-id>` for manual pane execution
+- [ ] End-to-end tested Codex workflow
+- [ ] CC escalation feedback loop
+- [ ] Zellij adapter
 
 ## Tech Stack
 
-| Component | Choice | Rationale |
-|-----------|--------|-----------|
-| Language | Rust | Single-binary distribution, performance, safety |
-| Async runtime | tokio | Rust async standard |
-| CLI | clap | Mature CLI parsing framework |
-| IPC | Unix Socket + JSON-RPC | Simple, reliable, debuggable |
-| MCP | rmcp | Official Rust MCP SDK |
-| Git | git2 (libgit2) | Worktree management |
-| Logging | tracing | Structured async logging |
-
-## Comparison
-
-| Dimension | Existing tools | Orca |
-|-----------|---------------|------|
-| Terminal | Requires tmux | Native terminal (Ghostty / iTerm2 / any) |
-| Orchestration | CC plugin or standalone TUI | CC brain + daemon middle layer |
-| Communication | Text buffer / filesystem | Structured JSON-RPC over Unix Socket |
-| Escalation | All or nothing | 3-level: worker -> CC -> user |
-| Isolation | Always worktree | Smart: worktree or serial based on file overlap |
-| Workers | Hard-coded | Extensible Worker trait |
-| Install | npm/cargo + tmux + dependencies | Single binary, one-line curl |
+Rust, tokio, clap, serde, rmcp (MCP SDK), tracing
 
 ## License
 
