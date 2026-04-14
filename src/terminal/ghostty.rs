@@ -34,20 +34,33 @@ pub struct GhosttyTerminal {
 }
 
 impl GhosttyTerminal {
-    pub fn new(config: &TerminalConfig) -> Self {
-        // Capture origin terminal synchronously (no tokio runtime needed).
-        let origin_id = get_focused_terminal_sync().unwrap_or_default();
+    /// Create a new GhosttyTerminal.
+    ///
+    /// Reads the origin terminal UUID from `.orca/origin_terminal_id`
+    /// (written by `orca daemon start` before entering the async runtime).
+    /// This ensures splits always happen in the window where the user started the daemon.
+    pub fn new_with_project_dir(config: &TerminalConfig, project_dir: &std::path::Path) -> Self {
+        let origin_file = project_dir.join(".orca/origin_terminal_id");
+        let origin_id = std::fs::read_to_string(&origin_file)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
         if origin_id.is_empty() {
-            tracing::warn!(
-                "could not capture Ghostty terminal UUID — splits may go to wrong window"
-            );
+            tracing::warn!("no origin terminal UUID found — run `orca daemon start` from Ghostty");
         } else {
-            tracing::info!(terminal_id = %origin_id, "captured origin Ghostty terminal");
+            tracing::info!(terminal_id = %origin_id, "loaded origin Ghostty terminal from file");
         }
 
         Self {
             _config: config.clone(),
             origin_terminal_id: origin_id,
+        }
+    }
+
+    pub fn new(config: &TerminalConfig) -> Self {
+        Self {
+            _config: config.clone(),
+            origin_terminal_id: String::new(),
         }
     }
 }

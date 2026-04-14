@@ -180,8 +180,11 @@ impl Daemon {
         let server = IpcServer::bind(&socket_path, handler)?;
 
         // Create and spawn the task executor.
-        let terminal_impl =
-            terminal::create_terminal(&self.config.terminal.provider, &self.config.terminal);
+        let terminal_impl = terminal::create_terminal(
+            &self.config.terminal.provider,
+            &self.config.terminal,
+            &self.project_dir,
+        );
         let executor = TaskExecutor::new(
             Arc::clone(&self.state),
             Arc::clone(&self.scheduler),

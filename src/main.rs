@@ -97,6 +97,23 @@ async fn handle_daemon(action: DaemonAction, config: Config, project_dir: &Path)
                 )
                 .init();
 
+            // Capture the current Ghostty terminal UUID NOW, while we're
+            // still in the user's shell context (correct window in front).
+            // Store it so the daemon can read it later for splits.
+            if config.terminal.provider == "ghostty" {
+                let orca_dir = project_dir.join(".orca");
+                let output = std::process::Command::new("osascript")
+                    .args(["-e", r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#])
+                    .output();
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        let uuid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        let _ = std::fs::write(orca_dir.join("origin_terminal_id"), &uuid);
+                        tracing::info!(terminal_id = %uuid, "captured origin terminal for splits");
+                    }
+                }
+            }
+
             let daemon = Daemon::new(config, project_dir.to_path_buf())?;
             daemon.run().await
         }

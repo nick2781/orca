@@ -29,9 +29,13 @@ pub trait Terminal: Send + Sync {
 pub fn create_terminal(
     provider: &str,
     config: &crate::config::TerminalConfig,
+    project_dir: &std::path::Path,
 ) -> Box<dyn Terminal> {
     match provider {
-        "ghostty" => Box::new(ghostty::GhosttyTerminal::new(config)),
+        "ghostty" => Box::new(ghostty::GhosttyTerminal::new_with_project_dir(
+            config,
+            project_dir,
+        )),
         "iterm2" => Box::new(iterm::ItermTerminal),
         _ => Box::new(manual::ManualTerminal),
     }
