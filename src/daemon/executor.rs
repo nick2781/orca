@@ -258,11 +258,20 @@ impl TaskExecutor {
 
         info!(task_id, worker_id, work_dir = %work_dir_str, "launching worker in terminal pane");
 
-        // Write AGENTS.md to working directory so Codex has full task context.
-        // Then git-add it so it doesn't show up as untracked in completion detection.
+        // Write orca task context to AGENTS.md in the worktree.
+        // If the project already has an AGENTS.md (checked out from repo),
+        // append orca's content so both project rules and task context are visible.
         let agents_content = generate_agents_md(&task_spec);
         let agents_path = Path::new(&work_dir_str).join("AGENTS.md");
-        std::fs::write(&agents_path, &agents_content)?;
+        if agents_path.exists() {
+            let existing = std::fs::read_to_string(&agents_path).unwrap_or_default();
+            std::fs::write(
+                &agents_path,
+                format!("{}\n\n---\n\n{}", existing, agents_content),
+            )?;
+        } else {
+            std::fs::write(&agents_path, &agents_content)?;
+        }
         let _ = std::process::Command::new("git")
             .args(["add", "AGENTS.md"])
             .current_dir(&work_dir_str)
