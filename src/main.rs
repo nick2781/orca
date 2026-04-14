@@ -15,6 +15,9 @@ use orca::config::Config;
 use orca::daemon::server::IpcClient;
 use orca::daemon::Daemon;
 use orca::protocol::{RpcRequest, RpcResponse};
+use orca::terminal::ghostty_origin::{
+    focused_terminal_id, persist_origin_terminal, resolve_origin_terminal, OriginSource,
+};
 
 #[derive(Parser)]
 #[command(
@@ -85,15 +88,10 @@ async fn main() -> Result<()> {
             let mut origin_uuid = String::new();
             if config.terminal.provider == "ghostty" {
                 let _ = std::fs::create_dir_all(&orca_dir);
-                let output = std::process::Command::new("osascript")
-                    .args(["-e", r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#])
-                    .output();
-                if let Ok(out) = output {
-                    if out.status.success() {
-                        origin_uuid = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                        if !origin_uuid.is_empty() {
-                            let _ = std::fs::write(orca_dir.join("origin_terminal_id"), &origin_uuid);
-                        }
+                if let Ok(uuid) = focused_terminal_id() {
+                    origin_uuid = uuid;
+                    if !origin_uuid.is_empty() {
+                        let _ = persist_origin_terminal(&project_dir, &origin_uuid);
                     }
                 }
             }
@@ -166,7 +164,11 @@ struct LocalTimer;
 
 impl tracing_subscriber::fmt::time::FormatTime for LocalTimer {
     fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
-        write!(w, "{}", chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z"))
+        write!(
+            w,
+            "{}",
+            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%:z")
+        )
     }
 }
 
@@ -188,32 +190,22 @@ async fn handle_daemon(action: DaemonAction, config: Config, project_dir: &Path)
             // Save origin terminal UUID for split pane targeting.
             // Priority: CLI arg (from MCP auto-start) > file (already saved) > AppleScript fallback.
             if config.terminal.provider == "ghostty" {
-                let orca_dir = project_dir.join(".orca");
-                let origin_file = orca_dir.join("origin_terminal_id");
-
-                if let Some(ref uuid) = origin_terminal {
-                    let _ = std::fs::write(&origin_file, uuid);
-                    tracing::info!(terminal_id = %uuid, "origin terminal from CLI arg");
-                } else if origin_file.exists() {
-                    let existing = std::fs::read_to_string(&origin_file)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string();
-                    if !existing.is_empty() {
-                        tracing::info!(terminal_id = %existing, "origin terminal from file");
-                    }
-                } else {
-                    // Fallback: front window (best effort for manual starts).
-                    let output = std::process::Command::new("osascript")
-                        .args(["-e", r#"tell application "Ghostty" to get id of focused terminal of selected tab of front window"#])
-                        .output();
-                    if let Ok(out) = output {
-                        if out.status.success() {
-                            let uuid = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                            if !uuid.is_empty() {
-                                let _ = std::fs::write(&origin_file, &uuid);
-                                tracing::info!(terminal_id = %uuid, "origin terminal from front window");
-                            }
+                if let Some(origin) =
+                    resolve_origin_terminal(project_dir, origin_terminal.as_deref())?
+                {
+                    persist_origin_terminal(project_dir, &origin.id)?;
+                    match origin.source {
+                        OriginSource::CliArg => {
+                            tracing::info!(terminal_id = %origin.id, "origin terminal from CLI arg");
+                        }
+                        OriginSource::SavedFile => {
+                            tracing::info!(terminal_id = %origin.id, "origin terminal from file");
+                        }
+                        OriginSource::ProjectDirectory => {
+                            tracing::info!(terminal_id = %origin.id, "origin terminal matched by project directory");
+                        }
+                        OriginSource::FrontWindow => {
+                            tracing::warn!(terminal_id = %origin.id, "origin terminal falling back to front window");
                         }
                     }
                 }

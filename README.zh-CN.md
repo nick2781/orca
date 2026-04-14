@@ -8,62 +8,21 @@
 
 Orca 让 Claude Code (CC) 充当大脑 —— 负责规划、审查和决策 —— 同时将实现任务分发给多个并行运行的 Codex worker。一个轻量 daemon 通过 Unix Socket 结构化消息协调一切。
 
-## 项目状态
+## 当前范围
 
-### 已完成
+- Daemon + Unix Socket IPC、状态持久化、任务调度
+- 从 plan 提交到 review 的任务生命周期
+- 基于文件重叠的隔离决策（worktree / same-dir）
+- Claude Code 可用的 MCP server
+- Codex worker 在用户可见终端分屏中执行
+- 基于 Codex session log 的完成检测
+- 主动把提权通知带回主终端
 
-- Daemon + Unix Socket IPC（启动/停止/PID 管理）
-- 任务生命周期：plan 提交 → DAG 调度 → worker 分派 → review
-- 智能隔离：基于文件重叠自动选择 worktree 或串行
-- 三级提权路由 + 可配置规则 + 主动通知
-- MCP Server（8 个 tools，CC 集成）
-- CLI（12 个子命令，包含 `worker run`）
-- 状态持久化（state.json + append-only ledger）
-- 终端分屏：Ghostty (AppleScript)、iTerm2、手动兜底
-- 基于日志的完成检测（读取 codex session log）
-- 提权通知：聚焦 CC 终端 + macOS 系统通知
-- 92 个测试通过，clippy clean
+目前还没有：
 
-### 进行中
-
-- **Ghostty CLI API**：计划给 [Ghostty](https://github.com/ghostty-org/ghostty) 提 PR 增加 `ghostty +action new_split -- <command>` 支持。见 [ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353)。
-
-### 未完成
-
-- 端到端 Codex 工作流实测
-- WezTerm / kitty / Zellij adapter 实现
-
-## 为什么做 Orca？
-
-| 问题 | Orca 的方案 |
-|------|------------|
-| 几乎所有工具都依赖 tmux | 终端适配层（支持有分屏 API 的终端）|
-| 没有 CC→Codex 编排 | CC 做大脑，Codex 做 worker，daemon 做中间层 |
-| 权限要么全自动要么全手动 | 三级提权：worker → CC 自动判断 → 用户确认 |
-| 通信基于终端缓冲区文本解析 | 结构化 JSON-RPC over Unix Socket |
-
-## 架构
-
-```
-┌──────────────────────────────────────────────┐
-│  CC (Claude Code) — 大脑                      │
-│  规划、审查、困难决策                           │
-└──────────────────┬───────────────────────────┘
-                   │ MCP (stdio → Unix Socket)
-                   ▼
-┌──────────────────────────────────────────────┐
-│  orcad (daemon) — 编排层                      │
-│  任务调度、提权路由、隔离决策、状态持久化         │
-└──────┬──────────────┬──────────────┬─────────┘
-       ▼              ▼              ▼
-  ┌─────────┐   ┌─────────┐   ┌─────────┐
-  │ Worker 1│   │ Worker 2│   │ Worker 3│
-  │ (Codex) │   │ (Codex) │   │ (Codex) │
-  └─────────┘   └─────────┘   └─────────┘
-  终端分屏（用户实时观察）
-```
-
-Worker 在**用户可见的终端分屏**中运行，不是隐藏子进程。用户实时看到 Codex 工作。任务完成通过读取 Codex session log（`~/.codex/sessions/`）中的结构化标记（`[ORCA:DONE]`、`task_complete` 事件等）检测。
+- 真实 Codex 工作流的端到端验证
+- WezTerm / kitty / Zellij 适配器
+- Ghostty 原生 CLI split API（现在仍依赖 AppleScript）
 
 ## 终端支持
 
@@ -71,14 +30,14 @@ Orca 需要终端支持**可编程分屏** —— 从外部进程创建新的 sp
 
 | 终端 | 分屏 API | 状态 |
 |------|---------|------|
-| **WezTerm** | `wezterm cli split-pane -- cmd` | 支持 |
-| **kitty** | `kitten @ launch --type=window cmd` | 支持 |
+| **WezTerm** | `wezterm cli split-pane -- cmd` | 计划支持 |
+| **kitty** | `kitten @ launch --type=window cmd` | 计划支持 |
 | **iTerm2** | AppleScript / Python API | 支持 |
-| **Ghostty** | 无（暂时）| [PR 计划中](https://github.com/ghostty-org/ghostty/discussions/2353) |
+| **Ghostty** | AppleScript 分屏与聚焦 | 支持 |
 | **Zellij** | `zellij action new-pane -- cmd` | 计划支持 |
-| **任何终端** | 手动模式（用户自己分屏 + 运行命令）| 兜底方案 |
+| **任何终端** | 手动模式（用户自己分屏 + 运行命令）| 支持的兜底方案 |
 
-**Ghostty 用户**：Ghostty 内部有 `new_split` action 但没有外部 API。我们计划给 Ghostty 贡献这个功能。在此之前，orca 会打印命令供你手动在 Ghostty 分屏中执行。
+**Ghostty 用户**：Orca 现在已经能通过 AppleScript 在 Ghostty 里分屏、聚焦和定位终端。未来如果 Ghostty 提供原生 CLI split API，Orca 会优先切过去。见 [ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353)。
 
 ## 三级提权
 
@@ -106,9 +65,19 @@ Level 2: CC → 用户（架构变更、危险操作）
 
 ## 安装
 
+Pre-release / 当前分支：
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
 ```
+
+稳定 release 通道：
+
+```bash
+curl -fsSL https://github.com/Nick2781/orca/releases/latest/download/install.sh | sh
+```
+
+`main` 分支安装器在还没有 GitHub release 时会自动回退到源码构建。等 tagged release 可用后，`releases/latest/download/install.sh` 就是更稳定的安装入口。
 
 或从源码构建：
 
@@ -116,16 +85,6 @@ curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
 git clone https://github.com/Nick2781/orca.git
 cd orca && cargo build --release
 ```
-
-## Roadmap
-
-- [ ] Ghostty CLI API PR（[ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353)）
-- [ ] WezTerm / kitty adapter 实现
-- [ ] 端到端 Codex 工作流实测
-- [ ] Zellij adapter
-- [x] ~~`orca worker run <task-id>` 手动 pane 执行~~
-- [x] ~~CC 提权反馈闭环~~
-- [x] ~~基于日志的完成检测~~
 
 ## 技术栈
 

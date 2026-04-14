@@ -689,8 +689,11 @@ default_args = ["--full-auto", "-q"]
 ## 11. 安装
 
 ```bash
-# 一行安装（从 GitHub Releases 下载预编译二进制）
+# 一行安装，pre-release 路径
 curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
+
+# 稳定 release 路径
+curl -fsSL https://github.com/Nick2781/orca/releases/latest/download/install.sh | sh
 
 # 安装脚本做的事：
 # 1. 检测 OS + arch

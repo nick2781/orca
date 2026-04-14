@@ -6,73 +6,23 @@ Multi-agent orchestrator: Claude Code brain + Codex workers.
 
 [中文](README.zh-CN.md) | English
 
-Orca lets Claude Code (CC) act as the brain — planning, reviewing, and making decisions — while dispatching implementation tasks to multiple Codex workers running in parallel. A lightweight daemon coordinates everything through structured messaging over Unix sockets.
+Orca lets Claude Code (CC) plan, review, and decide while Codex workers implement tasks in visible terminal panes. A small daemon coordinates scheduling, state, isolation, and escalation over Unix socket JSON-RPC.
 
-## Status
+## Current scope
 
-### What works
+- Daemon with Unix socket IPC, state persistence, and a task scheduler
+- Task lifecycle from plan submission to review
+- Smart isolation with worktree vs same-dir decisions
+- MCP server for Claude Code integration
+- Codex worker execution in visible terminal panes
+- Log-based completion detection from Codex session logs
+- Active escalation notifications back to the main terminal
 
-- Daemon with Unix socket IPC (start/stop/status, PID management)
-- Task lifecycle: plan submission → DAG scheduling → worker dispatch → review
-- Smart isolation: worktree vs serial based on file overlap
-- 3-level escalation routing with configurable rules and active notification
-- MCP server for Claude Code integration (8 tools)
-- CLI with 12 subcommands (including `worker run`)
-- State persistence (state.json + append-only ledger)
-- Terminal split panes: Ghostty (AppleScript), iTerm2, manual fallback
-- Log-based completion detection via codex session logs
-- Escalation notification: focus CC terminal + macOS notification
-- 92 tests passing, clippy clean
+Still missing:
 
-### What's in progress
-
-- **Ghostty CLI API**: We are planning to contribute a PR to [Ghostty](https://github.com/ghostty-org/ghostty) to add `ghostty +action new_split -- <command>` support. See [ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353).
-
-### What's not done yet
-
-- End-to-end tested workflow with real Codex
-- WezTerm / kitty / Zellij adapter implementations
-
-## Why Orca?
-
-| Problem | Orca's Approach |
-|---------|-----------------|
-| Nearly every tool depends on tmux | Terminal adapter layer (supports terminals with split APIs) |
-| No CC-to-Codex orchestration | CC as brain, Codex as workers, daemon as middle layer |
-| All-or-nothing permissions | 3-level escalation: worker → CC auto → user |
-| Communication via terminal buffer parsing | Structured JSON-RPC over Unix Socket |
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────┐
-│  CC (Claude Code) — Brain                    │
-│  Planning, review, hard decisions            │
-└──────────────────┬───────────────────────────┘
-                   │ MCP (stdio → Unix Socket)
-                   ▼
-┌──────────────────────────────────────────────┐
-│  orcad (daemon) — Orchestration layer        │
-│  Task scheduling, escalation routing,        │
-│  isolation decisions, state persistence      │
-└──────┬──────────────┬──────────────┬─────────┘
-       ▼              ▼              ▼
-  ┌─────────┐   ┌─────────┐   ┌─────────┐
-  │ Worker 1│   │ Worker 2│   │ Worker 3│
-  │ (Codex) │   │ (Codex) │   │ (Codex) │
-  └─────────┘   └─────────┘   └─────────┘
-  Terminal split panes (user watches in real time)
-```
-
-Workers run in **user-visible terminal split panes**, not as hidden subprocesses. The user sees Codex working in real time. Task completion is detected by reading Codex session logs (`~/.codex/sessions/`) for structured markers (`[ORCA:DONE]`, `[ORCA:ESCALATE]`, etc.) and `task_complete` events.
-
-### Three layers
-
-| Layer | Component | Does | Does NOT |
-|-------|-----------|------|----------|
-| Brain | CC | Plan, review, decide | Write code |
-| Orchestration | orcad | Schedule, route escalations, manage state | LLM inference |
-| Execution | Worker (Codex) | Implement, test, git ops | Architecture decisions |
+- End-to-end validation with real Codex workflows
+- WezTerm / kitty / Zellij adapters
+- A native Ghostty CLI split API instead of AppleScript
 
 ## Terminal Support
 
@@ -80,14 +30,14 @@ Orca needs terminals that support **programmatic split-pane creation** — the a
 
 | Terminal | Split API | Status |
 |----------|----------|--------|
-| **WezTerm** | `wezterm cli split-pane -- cmd` | Supported |
-| **kitty** | `kitten @ launch --type=window cmd` | Supported |
+| **WezTerm** | `wezterm cli split-pane -- cmd` | Planned |
+| **kitty** | `kitten @ launch --type=window cmd` | Planned |
 | **iTerm2** | AppleScript / Python API | Supported |
-| **Ghostty** | None (yet) | [PR planned](https://github.com/ghostty-org/ghostty/discussions/2353) |
+| **Ghostty** | AppleScript split + focus API | Supported |
 | **Zellij** | `zellij action new-pane -- cmd` | Planned |
-| **Any terminal** | Manual mode (user splits + runs command) | Fallback |
+| **Any terminal** | Manual mode (user splits + runs command) | Supported fallback |
 
-**Ghostty users**: Ghostty's internal `new_split` action exists but has no external API. We plan to contribute this to Ghostty. In the meantime, orca prints the command for you to manually run in a Ghostty split pane.
+**Ghostty users**: Orca works today through AppleScript-driven split, focus, and terminal targeting. A native Ghostty CLI split API would still be better. See [ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353).
 
 ## 3-Level Escalation
 
@@ -124,9 +74,19 @@ cc_first = ["conflict", "scope_exceeded"]
 
 ## Install
 
+Pre-release / current branch:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
 ```
+
+Stable release channel:
+
+```bash
+curl -fsSL https://github.com/Nick2781/orca/releases/latest/download/install.sh | sh
+```
+
+The `main` installer falls back to a source build when no GitHub release exists yet. The release installer is the stable path once tagged releases are available.
 
 Or build from source:
 
@@ -194,31 +154,6 @@ worktree_dir = ".agents/worktree"
 default_strategy = "auto"
 target_branch = "main"
 ```
-
-## Worker Extensibility
-
-V1 ships Codex only. The `Worker` trait supports future adapters (Gemini CLI, Aider, etc.):
-
-```rust
-#[async_trait]
-trait Worker: Send + Sync {
-    async fn spawn(&self, worker_id: &str, work_dir: &str) -> Result<()>;
-    async fn dispatch(&self, worker_id: &str, task: &TaskSpec) -> Result<()>;
-    async fn health_check(&self, worker_id: &str) -> Result<WorkerStatus>;
-    async fn interrupt(&self, worker_id: &str) -> Result<()>;
-    async fn cleanup(&self, worker_id: &str) -> Result<()>;
-}
-```
-
-## Roadmap
-
-- [ ] Ghostty CLI API PR ([ghostty-org/ghostty#2353](https://github.com/ghostty-org/ghostty/discussions/2353))
-- [ ] WezTerm / kitty adapter implementation
-- [ ] End-to-end tested Codex workflow
-- [ ] Zellij adapter
-- [x] ~~`orca worker run <task-id>` for manual pane execution~~
-- [x] ~~CC escalation feedback loop~~
-- [x] ~~Log-based completion detection~~
 
 ## Tech Stack
 

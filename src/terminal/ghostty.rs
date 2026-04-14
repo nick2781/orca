@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+use super::ghostty_origin::{resolve_origin_terminal, OriginSource};
 use super::Terminal;
 use crate::config::TerminalConfig;
 
@@ -41,15 +42,30 @@ impl GhosttyTerminal {
     /// (written by `orca daemon start` before entering the async runtime).
     /// This ensures splits always happen in the window where the user started the daemon.
     pub fn new_with_project_dir(config: &TerminalConfig, project_dir: &std::path::Path) -> Self {
-        let origin_file = project_dir.join(".orca/origin_terminal_id");
-        let origin_id = std::fs::read_to_string(&origin_file)
-            .map(|s| s.trim().to_string())
+        let origin = resolve_origin_terminal(project_dir, None).ok().flatten();
+        let origin_id = origin
+            .as_ref()
+            .map(|origin| origin.id.clone())
             .unwrap_or_default();
 
-        if origin_id.is_empty() {
-            tracing::warn!("no origin terminal UUID found — run `orca daemon start` from Ghostty");
-        } else {
-            tracing::info!(terminal_id = %origin_id, "loaded origin Ghostty terminal from file");
+        match origin.as_ref().map(|origin| origin.source) {
+            Some(OriginSource::SavedFile) => {
+                tracing::info!(terminal_id = %origin_id, "loaded origin Ghostty terminal from file");
+            }
+            Some(OriginSource::ProjectDirectory) => {
+                tracing::info!(terminal_id = %origin_id, "matched origin Ghostty terminal by project directory");
+            }
+            Some(OriginSource::FrontWindow) => {
+                tracing::warn!(terminal_id = %origin_id, "falling back to front Ghostty window for origin terminal");
+            }
+            Some(OriginSource::CliArg) => {
+                tracing::info!(terminal_id = %origin_id, "loaded origin Ghostty terminal from explicit id");
+            }
+            None => {
+                tracing::warn!(
+                    "no origin terminal UUID found — run `orca daemon start` from Ghostty"
+                );
+            }
         }
 
         Self {

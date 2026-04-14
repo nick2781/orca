@@ -49,10 +49,47 @@ rust_target() {
 
 latest_tag() {
   need_cmd curl
-  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+  local response=""
+  response="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || true)"
+  [ -n "$response" ] || return 0
+  printf '%s\n' "$response" \
     | grep '"tag_name"' \
     | head -1 \
     | sed -E 's/.*"tag_name":\s*"([^"]+)".*/\1/'
+}
+
+install_binary() {
+  local binary_path="$1"
+  mkdir -p "$INSTALL_DIR"
+  mv "$binary_path" "${INSTALL_DIR}/${BINARY}"
+  chmod +x "${INSTALL_DIR}/${BINARY}"
+  info "Installed to ${INSTALL_DIR}/${BINARY}"
+}
+
+install_from_release() {
+  local tag="$1" target="$2" tmpdir="$3"
+  local url="https://github.com/${REPO}/releases/download/${tag}/orca-${target}.tar.gz"
+
+  info "Latest release: ${tag}"
+  info "Downloading ${url}"
+
+  curl -fsSL "$url" -o "${tmpdir}/orca.tar.gz"
+  tar -xzf "${tmpdir}/orca.tar.gz" -C "$tmpdir"
+  install_binary "${tmpdir}/orca"
+}
+
+install_from_main() {
+  local tmpdir="$1"
+  local archive="${tmpdir}/orca-main.tar.gz"
+  local source_dir="${tmpdir}/orca-main"
+
+  need_cmd cargo
+
+  info "No GitHub release found. Building from the current main branch."
+  curl -fsSL "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" -o "$archive"
+  tar -xzf "$archive" -C "$tmpdir"
+  cargo build --release --manifest-path "${source_dir}/Cargo.toml"
+  install_binary "${source_dir}/target/release/${BINARY}"
 }
 
 # --- Main ------------------------------------------------------------------
@@ -61,7 +98,7 @@ main() {
   need_cmd curl
   need_cmd tar
 
-  local os arch target tag url
+  local os arch target tag
 
   os="$(detect_os)"
   arch="$(detect_arch)"
@@ -80,14 +117,11 @@ main() {
   tmpdir="$(mktemp -d)"
   trap 'rm -rf "$tmpdir"' EXIT
 
-  curl -fsSL "$url" -o "${tmpdir}/orca.tar.gz"
-  tar -xzf "${tmpdir}/orca.tar.gz" -C "$tmpdir"
-
-  mkdir -p "$INSTALL_DIR"
-  mv "${tmpdir}/orca" "${INSTALL_DIR}/${BINARY}"
-  chmod +x "${INSTALL_DIR}/${BINARY}"
-
-  info "Installed to ${INSTALL_DIR}/${BINARY}"
+  if [ -n "$tag" ]; then
+    install_from_release "$tag" "$target" "$tmpdir"
+  else
+    install_from_main "$tmpdir"
+  fi
 
   # --- Add to PATH if needed ------------------------------------------------
 

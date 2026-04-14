@@ -21,6 +21,11 @@ use crate::worker::Worker;
 
 /// Atomic counter for generating unique worker IDs.
 static WORKER_COUNTER: AtomicU32 = AtomicU32::new(1);
+const EXECUTOR_TICK_INTERVAL_SECS: u64 = 2;
+const MONITOR_POLL_INTERVAL_SECS: u64 = 1;
+const SESSION_LOG_INIT_WAIT_SECS: u64 = 3;
+const SESSION_LOG_FLUSH_GRACE_SECS: u64 = 2;
+const GRACEFUL_EXIT_DELAY_SECS: u64 = 2;
 
 /// Generate the next unique worker ID.
 fn next_worker_id() -> String {
@@ -79,7 +84,7 @@ impl TaskExecutor {
             if let Err(e) = self.tick().await {
                 error!("executor tick error: {e:#}");
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(EXECUTOR_TICK_INTERVAL_SECS)).await;
         }
     }
 
@@ -303,7 +308,13 @@ impl TaskExecutor {
         if worker_config.full_auto {
             parts.push("--full-auto".to_string());
         }
-        // Worktrees: allow sandbox to write main repo's .git (needed for git commit).
+        // Worktree git writes still hit `<repo>/.git/worktrees/...` outside the worktree cwd.
+        // Session logs from 2026-04-14 show the denied path already uses `/private/tmp/...`,
+        // so this is not a `/tmp` versus `/private/tmp` canonicalization bug. The same logs
+        // also show Codex's recorded `turn_context` writable roots do not expand to the parent
+        // repo after `--add-dir=<repo>`, so the shared `.git` metadata path remains blocked.
+        // Keep passing `--add-dir` because it is harmless, but the monitor still needs to
+        // detect and auto-approve worktree git prompts until Codex widens that sandbox root.
         if matches!(decision, IsolationDecision::Worktree { .. }) {
             let canonical = std::fs::canonicalize(&self.project_dir)
                 .unwrap_or_else(|_| self.project_dir.clone());
@@ -506,10 +517,7 @@ fn read_session_events(path: &Path, offset: u64) -> (Vec<SessionEvent>, u64) {
                         "agent_message" => {
                             if let Some(msg) = payload.get("message").and_then(|m| m.as_str()) {
                                 // Detect approval requests before marker parsing.
-                                if msg.contains("requesting approval")
-                                    || msg.contains("requesting elevated")
-                                    || msg.contains("blocked by the sandbox")
-                                {
+                                if is_approval_request_message(msg) {
                                     events.push(SessionEvent::ApprovalNeeded(msg.to_string()));
                                     line.clear();
                                     continue;
@@ -547,6 +555,23 @@ fn read_session_events(path: &Path, offset: u64) -> (Vec<SessionEvent>, u64) {
     (events, new_offset)
 }
 
+fn is_approval_request_message(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    let mentions_sandbox = lower.contains("sandbox");
+    let mentions_approval_flow = lower.contains("requesting")
+        || lower.contains("approval")
+        || lower.contains("permission")
+        || lower.contains("elevated")
+        || lower.contains("blocked")
+        || lower.contains("denied")
+        || lower.contains("denies")
+        || lower.contains("restriction")
+        || lower.contains("writable root")
+        || lower.contains("writable sandbox");
+
+    mentions_sandbox && mentions_approval_flow
+}
+
 /// Check whether a codex session is still active by checking if the
 /// session log file was modified recently (within the last 30 seconds).
 /// Falls back to pgrep if no session log is available.
@@ -574,7 +599,7 @@ fn is_codex_active(session_log: &Option<PathBuf>, work_dir: &Path) -> bool {
 /// Gracefully exit codex in a terminal pane and close the pane.
 async fn graceful_exit_codex(terminal: &Arc<dyn Terminal>, pane_id: &str) {
     let _ = terminal.send_text(pane_id, "/exit\n").await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(GRACEFUL_EXIT_DELAY_SECS)).await;
     let _ = terminal.close_pane(pane_id).await;
     info!(pane_id, "sent /exit to codex and closed pane");
 }
@@ -637,14 +662,16 @@ async fn monitor_task_completion(p: MonitorParams) {
     } = p;
     let start = std::time::Instant::now();
 
-    // Wait for codex to initialize and create its session log.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Give Codex time to create the session log before the first poll. This does
+    // not race with executor scheduling because start_task already moved the task
+    // out of Pending before this monitor task was spawned.
+    tokio::time::sleep(Duration::from_secs(SESSION_LOG_INIT_WAIT_SECS)).await;
 
     let mut session_log: Option<PathBuf> = None;
     let mut log_offset: u64 = 0;
 
     loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(MONITOR_POLL_INTERVAL_SECS)).await;
 
         // Try to find the session log if we haven't yet.
         if session_log.is_none() {
@@ -783,8 +810,7 @@ async fn monitor_task_completion(p: MonitorParams) {
                         // Route through escalation system:
                         // - Worktree tasks: auto-approve (worktree isolation = safe)
                         // - Same-dir tasks: escalate to CC
-                        let is_worktree =
-                            matches!(decision, IsolationDecision::Worktree { .. });
+                        let is_worktree = matches!(decision, IsolationDecision::Worktree { .. });
                         if is_worktree {
                             info!(task_id, worker_id, "auto-approving (worktree isolated)");
                             if let Some(ref pid) = pane_id {
@@ -844,8 +870,10 @@ async fn monitor_task_completion(p: MonitorParams) {
 
         // Fallback: codex exited without session log events.
         if !is_codex_active(&session_log, &work_dir) {
-            // Grace period: wait for session log to flush before giving up.
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            // Grace period: wait for the last session-log write to flush before
+            // giving up. This is independent of graceful_exit_codex(), which runs
+            // only after we have already observed completion and updated task state.
+            tokio::time::sleep(Duration::from_secs(SESSION_LOG_FLUSH_GRACE_SECS)).await;
 
             // Try to find the session log one more time if we haven't yet.
             if session_log.is_none() {
@@ -994,6 +1022,7 @@ fn parse_done_from_message(msg: &str) -> TaskOutput {
 mod tests {
     use super::*;
     use crate::types::{IsolationMode, Task, TaskContext, TaskSpec};
+    use std::io::Write;
 
     /// Build a minimal TaskSpec.
     fn make_spec(id: &str) -> TaskSpec {
@@ -1299,5 +1328,39 @@ mod tests {
         assert!(escalations[0]
             .summary
             .contains("Cannot determine isolation"));
+    }
+
+    #[test]
+    fn approval_message_detection_covers_new_log_variants() {
+        assert!(is_approval_request_message(
+            "The sandbox blocks writes to the repository's git metadata for this worktree. I'm requesting elevated execution for the git write steps only."
+        ));
+        assert!(is_approval_request_message(
+            "Staging hit a sandbox restriction because this worktree's git metadata lives outside the writable root. I'm requesting permission to run the git index updates outside the sandbox."
+        ));
+        assert!(is_approval_request_message(
+            "Git operations need elevated access in this worktree because the underlying `.git/worktrees/...` lock file lives outside the writable sandbox."
+        ));
+        assert!(!is_approval_request_message(
+            "Reading the repo state first and then I will run the scoped tests."
+        ));
+    }
+
+    #[test]
+    fn read_session_events_marks_new_approval_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"event_msg","payload":{{"type":"agent_message","message":"Git operations need elevated access in this worktree because the underlying `.git/worktrees/...` lock file lives outside the writable sandbox, so I'm requesting that access for staging and commit."}}}}"#
+        )
+        .unwrap();
+
+        let (events, offset) = read_session_events(&path, 0);
+
+        assert!(offset > 0);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], SessionEvent::ApprovalNeeded(_)));
     }
 }

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(codex exec:*)",
+      "Bash(/Users/nick/work/opensource/orca/target/release/orca:*)",
+      "Read(//private/tmp/orca-e2e-test/**)",
+      "Bash(/Users/nick/work/opensource/orca/target/release/orca daemon:*)",
+      "Bash(osascript:*)"
+    ]
+  }
+}

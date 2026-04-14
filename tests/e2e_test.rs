@@ -18,7 +18,10 @@ async fn fresh_call(socket: &Path, method: &str, params: serde_json::Value) -> R
 #[tokio::test]
 async fn test_daemon_plan_lifecycle() {
     // 1. Create a tempdir as project directory
-    let tmp = tempfile::tempdir().expect("create tempdir");
+    let tmp = tempfile::Builder::new()
+        .prefix("orca-e2e-")
+        .tempdir_in("/tmp")
+        .expect("create tempdir");
     let project_dir = tmp.path().to_path_buf();
 
     // 2. Init a git repo (needed for worktree support)
@@ -53,17 +56,44 @@ async fn test_daemon_plan_lifecycle() {
     // 3. Create .orca/ directory and Config
     let orca_dir = project_dir.join(".orca");
     std::fs::create_dir_all(&orca_dir).expect("create .orca dir");
-    let config = Config::default();
+    let mut config = Config::default();
+    config.daemon.socket_path = "orca.sock".to_string();
     let socket_path = config.socket_path(&project_dir);
 
     // 4. Start the daemon in a background task
     let daemon = Daemon::new(config, project_dir.clone()).expect("create daemon");
-    let daemon_handle = tokio::spawn(async move {
-        let _ = daemon.run().await;
-    });
+    let mut daemon_handle = tokio::spawn(async move { daemon.run().await });
 
-    // Wait for the daemon to start accepting connections
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait for the daemon to bind its socket before connecting, but fail fast
+    // if the daemon exits during startup.
+    tokio::select! {
+        result = &mut daemon_handle => {
+            match result {
+                Ok(Ok(())) => panic!("daemon exited before binding socket"),
+                Ok(Err(err)) => {
+                    let msg = format!("{err:#}");
+                    if msg.contains("failed to bind Unix socket")
+                        && msg.contains("Operation not permitted")
+                    {
+                        eprintln!("skipping e2e daemon lifecycle test: {msg}");
+                        return;
+                    }
+                    panic!("daemon failed before binding socket: {msg}");
+                }
+                Err(err) => panic!("daemon task failed before binding socket: {err}"),
+            }
+        }
+        _ = async {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            while tokio::time::Instant::now() < deadline {
+                if socket_path.exists() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!("timed out waiting for daemon socket at {}", socket_path.display());
+        } => {}
+    }
 
     // --- Test ping ---
     let resp = fresh_call(&socket_path, "ping", json!({})).await;

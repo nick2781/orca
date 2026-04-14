@@ -714,8 +714,11 @@ Project-level `orca.toml` overrides global config.
 ## 11. Installation
 
 ```bash
-# One-line install (download pre-built binary from GitHub Releases)
+# One-line install, pre-release path
 curl -fsSL https://raw.githubusercontent.com/Nick2781/orca/main/install.sh | sh
+
+# Stable release path
+curl -fsSL https://github.com/Nick2781/orca/releases/latest/download/install.sh | sh
 
 # Install script does:
 # 1. Detect OS + arch

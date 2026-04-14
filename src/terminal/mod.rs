@@ -1,4 +1,5 @@
 pub mod ghostty;
+pub mod ghostty_origin;
 pub mod iterm;
 pub mod manual;
 
