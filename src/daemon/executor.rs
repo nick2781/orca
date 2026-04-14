@@ -284,6 +284,11 @@ impl TaskExecutor {
         if worker_config.full_auto {
             flags.push("--full-auto".to_string());
         }
+        // Auto-trust the worktree directory via -c flag (no global config modification).
+        flags.push(format!(
+            "-c projects.\"{}\".trust_level=\"trusted\"",
+            work_dir_str.replace('"', "\\\"")
+        ));
         flags.extend(worker_config.args.iter().cloned());
         let flags_str = if flags.is_empty() {
             String::new()
