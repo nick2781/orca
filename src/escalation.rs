@@ -33,7 +33,7 @@ pub struct EscalationOption {
 }
 
 /// Context attached to an escalation request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EscalationContext {
     pub relevant_files: Vec<String>,
     pub worker_recommendation: Option<String>,
