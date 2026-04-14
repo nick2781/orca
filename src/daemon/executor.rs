@@ -357,22 +357,7 @@ fn get_git_diff_stat(work_dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Get `git status --porcelain` output for a working directory.
-/// Excludes AGENTS.md (written by orca, not by the worker).
-fn get_git_status(work_dir: &Path) -> String {
-    std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(work_dir)
-        .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|line| !line.ends_with("AGENTS.md"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
-}
+
 
 /// Check whether a codex process is still running in the given directory.
 ///
