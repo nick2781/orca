@@ -409,91 +409,75 @@ async fn monitor_task_completion(
         tokio::time::sleep(Duration::from_secs(5)).await;
 
         let work_dir_str = work_dir.to_str().unwrap_or(".");
-
-        // Check if HEAD has moved (codex made commits).
         let current_head = get_git_head(work_dir_str).unwrap_or_default();
         let has_new_commits = !current_head.is_empty() && current_head != initial_head;
-        let has_uncommitted = !get_git_status(&work_dir).trim().is_empty();
-
-        // Check if codex process is still alive.
         let codex_running = is_codex_running(&work_dir);
 
-        if !codex_running {
-            // Codex exited -- determine outcome based on git state.
+        // Case 1: New commits detected — task completed (regardless of process state).
+        // Codex in --full-auto may not exit after finishing, so we don't wait for exit.
+        if has_new_commits {
+            let diff = get_git_diff_stat(&work_dir);
+            info!(task_id, worker_id, "codex produced commits — task complete");
+
             let mut store = state.lock().unwrap();
-
-            if has_new_commits || has_uncommitted {
-                // Codex produced changes -> task done -> move to review.
-                let diff = get_git_diff_stat(&work_dir);
-                info!(task_id, worker_id, "codex completed with changes");
-
-                if let Some(task) = store.get_task_mut(&task_id) {
-                    task.output = Some(TaskOutput {
-                        files_changed: vec![],
-                        tests_passed: false,
-                        diff_summary: diff,
-                        stdout: String::new(),
-                    });
-                    let _ = task.transition_to(TaskState::Done);
-                    let _ = task.transition_to(TaskState::Review);
-                }
-                if let Some(w) = store.get_worker_mut(&worker_id) {
-                    w.status = WorkerStatus::Dead;
-                    w.current_task_id = None;
-                }
-                let _ = store.save();
-                let _ = store.log_event(
-                    "task_completed",
-                    json!({
-                        "task_id": task_id,
-                        "worker_id": worker_id,
-                        "has_commits": has_new_commits,
-                        "has_uncommitted": has_uncommitted,
-                    }),
-                );
-            } else {
-                // No changes -> codex failed to produce anything.
-                info!(task_id, worker_id, "codex exited without changes");
-                let escalation_id = format!("esc-exit-{}", task_id);
-
-                if let Some(task) = store.get_task_mut(&task_id) {
-                    let _ = task.transition_to(TaskState::Blocked);
-                    task.escalation_id = Some(escalation_id.clone());
-                }
-                if let Some(w) = store.get_worker_mut(&worker_id) {
-                    w.status = WorkerStatus::Dead;
-                    w.current_task_id = None;
-                }
-                store.add_escalation(EscalationRequest {
-                    id: escalation_id,
-                    task_id: task_id.clone(),
-                    worker_id: worker_id.clone(),
-                    category: EscalationCategory::Timeout,
-                    summary: "Codex exited without producing any changes".to_string(),
-                    options: vec![],
-                    context: EscalationContext {
-                        relevant_files: vec![],
-                        worker_recommendation: None,
-                    },
+            if let Some(task) = store.get_task_mut(&task_id) {
+                task.output = Some(TaskOutput {
+                    files_changed: vec![],
+                    tests_passed: false,
+                    diff_summary: diff,
+                    stdout: String::new(),
                 });
-                let _ = store.save();
-                let _ = store.log_event(
-                    "task_blocked",
-                    json!({
-                        "task_id": task_id,
-                        "worker_id": worker_id,
-                        "reason": "codex_exited_no_changes",
-                    }),
-                );
+                let _ = task.transition_to(TaskState::Done);
+                let _ = task.transition_to(TaskState::Review);
             }
+            if let Some(w) = store.get_worker_mut(&worker_id) {
+                w.status = WorkerStatus::Dead;
+                w.current_task_id = None;
+            }
+            let _ = store.save();
+            let _ = store.log_event(
+                "task_completed",
+                json!({ "task_id": task_id, "worker_id": worker_id }),
+            );
             break;
         }
 
-        // Check timeout.
+        // Case 2: Codex exited without producing commits.
+        if !codex_running {
+            info!(task_id, worker_id, "codex exited without commits");
+
+            let escalation_id = format!("esc-exit-{}", task_id);
+            let mut store = state.lock().unwrap();
+            if let Some(task) = store.get_task_mut(&task_id) {
+                let _ = task.transition_to(TaskState::Blocked);
+                task.escalation_id = Some(escalation_id.clone());
+            }
+            if let Some(w) = store.get_worker_mut(&worker_id) {
+                w.status = WorkerStatus::Dead;
+                w.current_task_id = None;
+            }
+            store.add_escalation(EscalationRequest {
+                id: escalation_id,
+                task_id: task_id.clone(),
+                worker_id: worker_id.clone(),
+                category: EscalationCategory::Timeout,
+                summary: "Codex exited without producing any changes".to_string(),
+                options: vec![],
+                context: EscalationContext::default(),
+            });
+            let _ = store.save();
+            let _ = store.log_event(
+                "task_blocked",
+                json!({ "task_id": task_id, "worker_id": worker_id, "reason": "no_changes" }),
+            );
+            break;
+        }
+
+        // Case 3: Timeout.
         if start.elapsed().as_secs() > timeout_secs {
             info!(task_id, worker_id, "task timed out after {}s", timeout_secs);
-            let escalation_id = format!("esc-timeout-{}", task_id);
 
+            let escalation_id = format!("esc-timeout-{}", task_id);
             let mut store = state.lock().unwrap();
             if let Some(task) = store.get_task_mut(&task_id) {
                 let _ = task.transition_to(TaskState::Blocked);
@@ -510,19 +494,12 @@ async fn monitor_task_completion(
                 category: EscalationCategory::Timeout,
                 summary: format!("Task exceeded timeout of {}s", timeout_secs),
                 options: vec![],
-                context: EscalationContext {
-                    relevant_files: vec![],
-                    worker_recommendation: None,
-                },
+                context: EscalationContext::default(),
             });
             let _ = store.save();
             let _ = store.log_event(
                 "task_timeout",
-                json!({
-                    "task_id": task_id,
-                    "worker_id": worker_id,
-                    "timeout_secs": timeout_secs,
-                }),
+                json!({ "task_id": task_id, "worker_id": worker_id }),
             );
             break;
         }
